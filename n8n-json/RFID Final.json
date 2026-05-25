@@ -1,0 +1,487 @@
+{
+  "name": "RFID Final",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{$json.message?.document?.file_id}}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -960,
+        -704
+      ],
+      "id": "fe9f3345-bb71-4355-a7f6-e77cfdbb3bbc",
+      "name": "Get a file",
+      "webhookId": "9a18af9c-2ea3-4995-86b7-59b756b6773d",
+      "credentials": {
+        "telegramApi": {
+          "id": "m3guMah7MtnfzEvh",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pick ECP or fallback to the first key in the row\nfunction getEcp(row) {\n  if (row.ECP !== undefined) return row.ECP;\n  const keys = Object.keys(row);\n  return keys.length ? row[keys[0]] : '';\n}\nconst out = [];\nfor (const i of items) {\n  const raw = String(getEcp(i.json) ?? '').trim();\n  if (!raw) continue;\n\n  // Your device adds exactly 3 zeros in front of the real barcode\n  // Remove up to the first 3 zeros only\n  const barcode = raw.replace(/^0{1,3}/, '');\n\n  // Skip empties after normalization\n  if (!barcode) continue;\n\n  out.push({ json: { ecp: raw, barcode } });\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        -896
+      ],
+      "id": "cc88980c-8bbf-44fb-8c6d-f3e63b539201",
+      "name": "Normalize ECP -> Barcode"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1184,
+        -704
+      ],
+      "id": "50abcabd-d58b-4d9b-a323-d33db31ea3da",
+      "name": "Telegram Trigger1",
+      "webhookId": "e779e2de-fe07-431e-bd37-e963a68c6b53",
+      "credentials": {
+        "telegramApi": {
+          "id": "m3guMah7MtnfzEvh",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "stock.quant",
+        "operation": "getAll",
+        "limit": "={{ 2000 }}",
+        "options": {
+          "fieldsList": [
+            "id",
+            "display_name",
+            "x_studio_barcode",
+            "product_id"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "x_studio_barcode",
+              "operator": "notEqual",
+              "value": "="
+            },
+            {
+              "fieldName": "=location_id.id",
+              "value": "63"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        -704
+      ],
+      "id": "4d8d901e-90cf-448a-8e27-0c05057ddf86",
+      "name": "Get CTL",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "stock.quant",
+        "operation": "getAll",
+        "limit": "={{ 2000 }}",
+        "options": {
+          "fieldsList": [
+            "id",
+            "display_name",
+            "x_studio_barcode",
+            "product_id"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "x_studio_barcode",
+              "operator": "notEqual"
+            },
+            {
+              "fieldName": "display_name",
+              "value": "MUON/Stock"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        -64,
+        -512
+      ],
+      "id": "b22edfea-762d-41eb-be51-e8be105d1dd0",
+      "name": "Get MUON",
+      "executeOnce": true,
+      "alwaysOutputData": false,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const seen = new Set();\nconst out = [];\nfor (const it of items) {\n  const bc = it.json.barcode;\n  if (bc && !seen.has(bc)) { seen.add(bc); out.push(it); }\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -896
+      ],
+      "id": "13a00466-b565-4bcb-a029-074891d84cec",
+      "name": "Deduplicate barcodes"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: many items, each { barcode }\n// Output: one item { scannedBarcodes: [...] }\nconst barcodes = items\n  .map(i => String(i.json.barcode ?? '').trim())\n  .filter(Boolean);\n\nreturn [{ json: { scannedBarcodes: [...new Set(barcodes)] } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        -896
+      ],
+      "id": "0dfbffd0-1576-458d-a886-24a97dc9e35a",
+      "name": "Pack scanned barcodes"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        160,
+        -720
+      ],
+      "id": "7e0d6537-f757-4fd2-af3f-7985e005ec06",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $(\"Telegram Trigger1\").first().json.message.chat.id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        608,
+        -800
+      ],
+      "id": "fdb0831a-1773-4edb-aeed-0e579e4fdb1b",
+      "name": "Send a text message",
+      "webhookId": "992817ce-9958-48f0-b523-376cec7618ef",
+      "credentials": {
+        "telegramApi": {
+          "id": "m3guMah7MtnfzEvh",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "options": {
+          "headerRow": true,
+          "sheetName": "sheet1"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -736,
+        -896
+      ],
+      "id": "f5c22caa-ccf4-424e-b8d2-82c6011bd90e",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "={{ $(\"Telegram Trigger1\").first().json.message.chat.id }}",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        608,
+        -608
+      ],
+      "id": "e87ebb83-c3f5-46eb-9afc-b61f65b92f84",
+      "name": "Send a document",
+      "webhookId": "31a446a2-0784-4c0b-a61b-759af0e00c41",
+      "credentials": {
+        "telegramApi": {
+          "id": "m3guMah7MtnfzEvh",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "# Summary node - Python\n# Input: output of Merge (Append from Pack scanned barcodes + Get CTL + Get MUON)\ndef norm_bc(v):\n    if v is None:\n        return None\n    return str(v).strip()\ndef get_product_info(rec):\n    \"\"\"\n    product_id in your data: [id, \"NAME\"]\n    \"\"\"\n    val = rec.get(\"product_id\")\n    pid = None\n    pname = None\n    if val is not None:\n        try:\n            seq = list(val)\n        except TypeError:\n            seq = []\n        if seq:\n            pid = seq[0]\n            if len(seq) > 1:\n                pname = seq[1]\n    if pname is None:\n        pname = rec.get(\"name\") or rec.get(\"product_name\")\n    return pid, pname\n# 1) Split Merge input -> scanned, CTL, MUON\nitems = _input.all()\nscanned_set = set()\nctl_records = []\nmuon_records = []\nfor it in items:\n    j = it[\"json\"]\n    if \"scannedBarcodes\" in j:\n        for bc in j.get(\"scannedBarcodes\", []):\n            bcn = norm_bc(bc)\n            if bcn:\n                scanned_set.add(bcn)\n    elif j.get(\"display_name\") == \"CTL/Stock\":\n        ctl_records.append(j)\n    elif j.get(\"display_name\") == \"MUON/Stock\":\n        muon_records.append(j)\ntotal_scanned = len(scanned_set)\ntotal_ctl = len(ctl_records)\ntotal_muon = len(muon_records)\n# 2) Index CTL + MUON\nctl_by_bc = {}\nfor rec in ctl_records:\n    bc = norm_bc(rec.get(\"x_studio_barcode\"))\n    if bc:\n        ctl_by_bc[bc] = rec\nmuon_barcodes = {\n    norm_bc(rec.get(\"x_studio_barcode\"))\n    for rec in muon_records\n    if norm_bc(rec.get(\"x_studio_barcode\"))\n}\n# 3) Missing list\nmissing_items = []\nfor bc, rec in ctl_by_bc.items():\n    if bc not in muon_barcodes and bc not in scanned_set:\n        missing_items.append((bc, rec))\nmissing_count = len(missing_items)\n# 4) Summary text (no full list, just a short preview)\nsummary_text = (\n    \"📦 Stock scan summary\\n\\n\"\n    f\"• Total scanned barcodes (unique): {total_scanned}\\n\"\n    f\"• Total CTL/Stock items: {total_ctl}\\n\"\n    f\"• Total MUON/Stock items: {total_muon}\\n\"\n    f\"• Missing (in CTL, not in MUON, not scanned): {missing_count}\\n\"\n)\nmessages = [summary_text]\n# 5) Optional preview: first 20 missing names, *without* barcode\nPREVIEW = 20\nif missing_items:\n    current = \"Top missing items (product_id product_name):\\n\"\n    for bc, rec in missing_items[:PREVIEW]:\n        pid, pname = get_product_info(rec)\n        pid_str = f\"[{pid}]\" if pid is not None else \"[?]\"\n        name_str = pname or \"\"\n        current += f\"- {pid_str} {name_str}\\n\"\n    current += f\"\\n(Full list attached as CSV)\"\n    messages.append(current)\n# 6) Output for Telegram text node\nreturn [{ \"json\": { \"text\": msg } } for msg in messages]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        -816
+      ],
+      "id": "08c55cd8-be77-4928-99cb-2146ee7a571c",
+      "name": "Code in Python (Beta)"
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import io\nimport zipfile\nimport base64\nimport html\n\ndef make_xlsx(headers, rows):\n\n    def esc(s):\n        if s is None:\n            return \"\"\n        return html.escape(str(s))\n\n    buffer = io.BytesIO()\n\n    with zipfile.ZipFile(buffer, \"w\", zipfile.ZIP_DEFLATED) as z:\n\n        # ------------------------------\n        # [Content_Types].xml\n        # ------------------------------\n        z.writestr(\"[Content_Types].xml\", \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n    <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n    <Default Extension=\"xml\" ContentType=\"application/xml\"/>\n    <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\n    <Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>\n    <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\n</Types>\"\"\")\n\n        # ------------------------------\n        # _rels/.rels\n        # ------------------------------\n        z.writestr(\"_rels/.rels\", \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n    <Relationship Id=\"rId1\"\n        Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\"\n        Target=\"xl/workbook.xml\"/>\n</Relationships>\"\"\")\n\n        # ------------------------------\n        # xl/_rels/workbook.xml.rels\n        # ------------------------------\n        z.writestr(\"xl/_rels/workbook.xml.rels\", \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n    <Relationship Id=\"rId1\"\n        Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\"\n        Target=\"worksheets/sheet1.xml\"/>\n    <Relationship Id=\"rId2\"\n        Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\"\n        Target=\"styles.xml\"/>\n</Relationships>\"\"\")\n\n        # ------------------------------\n        # xl/workbook.xml\n        # ------------------------------\n        z.writestr(\"xl/workbook.xml\", \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"\n          xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\n    <sheets>\n        <sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/>\n    </sheets>\n</workbook>\"\"\")\n\n        # ------------------------------\n        # xl/styles.xml (FULL MINIMAL)\n        # ------------------------------\n        z.writestr(\"xl/styles.xml\", \"\"\"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n    <fonts count=\"1\">\n        <font><sz val=\"11\"/><color theme=\"1\"/><name val=\"Calibri\"/></font>\n    </fonts>\n    <fills count=\"2\">\n        <fill><patternFill patternType=\"none\"/></fill>\n        <fill><patternFill patternType=\"gray125\"/></fill>\n    </fills>\n    <borders count=\"1\">\n        <border><left/><right/><top/><bottom/><diagonal/></border>\n    </borders>\n    <cellStyleXfs count=\"1\">\n        <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>\n    </cellStyleXfs>\n    <cellXfs count=\"1\">\n        <xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>\n    </cellXfs>\n</styleSheet>\"\"\")\n\n        # ------------------------------\n        # xl/worksheets/sheet1.xml\n        # ------------------------------\n        sheet = ['<?xml version=\"1.0\" encoding=\"UTF-8\"?>']\n        sheet.append('<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">')\n        sheet.append('<sheetData>')\n\n        # Header row\n        sheet.append('<row r=\"1\">')\n        for col_idx, h in enumerate(headers):\n            col_letter = chr(65 + col_idx)\n            sheet.append(f'<c r=\"{col_letter}1\" t=\"inlineStr\"><is><t>{esc(h)}</t></is></c>')\n        sheet.append('</row>')\n\n        # Data rows\n        for r_idx, row in enumerate(rows, start=2):\n            sheet.append(f'<row r=\"{r_idx}\">')\n            for c_idx, cell in enumerate(row):\n                col_letter = chr(65 + c_idx)\n                sheet.append(f'<c r=\"{col_letter}{r_idx}\" t=\"inlineStr\"><is><t>{esc(cell)}</t></is></c>')\n            sheet.append('</row>')\n\n        sheet.append('</sheetData></worksheet>')\n\n        z.writestr(\"xl/worksheets/sheet1.xml\", \"\".join(sheet))\n\n    return buffer.getvalue()\n\n\n# -------------------------------\n# Build your file\n# -------------------------------\n\n# YOUR MISSING ROWS GENERATION CODE (giữ nguyên)\nitems = _input.all()\n\nscanned_set = set()\nctl_records = []\nmuon_records = []\n\ndef norm_bc(v): return None if v is None else str(v).strip()\n\ndef get_product_info(rec):\n    val = rec.get(\"product_id\")\n    pid = None\n    pname = None\n    if val is not None:\n        try:\n            seq = list(val)\n        except: seq = []\n        if seq:\n            pid = seq[0]\n            if len(seq) > 1: pname = seq[1]\n    if pname is None: pname = rec.get(\"name\") or rec.get(\"product_name\")\n    return pid, pname\n\nfor it in items:\n    j = it[\"json\"]\n    if \"scannedBarcodes\" in j:\n        for bc in j[\"scannedBarcodes\"]:\n            b = norm_bc(bc)\n            if b: scanned_set.add(b)\n    elif j.get(\"display_name\") == \"CTL/Stock\":\n        ctl_records.append(j)\n    elif j.get(\"display_name\") == \"MUON/Stock\":\n        muon_records.append(j)\n\nctl_map = {\n    norm_bc(r.get(\"x_studio_barcode\")): r\n    for r in ctl_records if norm_bc(r.get(\"x_studio_barcode\"))\n}\n\nmuon_set = {\n    norm_bc(r.get(\"x_studio_barcode\"))\n    for r in muon_records if norm_bc(r.get(\"x_studio_barcode\"))\n}\n\nmissing_rows = []\nfor bc, rec in ctl_map.items():\n    if bc not in muon_set and bc not in scanned_set:\n        pid, pname = get_product_info(rec)\n        missing_rows.append([bc, pid, pname])\n\n# Build XLSX\nexcel_bytes = make_xlsx(\n    headers=[\"barcode\", \"product_id\", \"product_name\"],\n    rows=missing_rows\n)\n\nencoded = base64.b64encode(excel_bytes).decode(\"utf-8\")\n\nreturn [{\n    \"json\": {\"missing_count\": len(missing_rows)},\n    \"binary\": {\n        \"data\": {\n            \"data\": encoded,\n            \"mimeType\": \"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\",\n            \"fileName\": \"missing_stock.xlsx\"\n        }\n    }\n}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        -592
+      ],
+      "id": "1a9ea632-fb59-45cd-8b51-4bbef838aa1c",
+      "name": "Code in Python (Beta)1"
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "# ===== 1. Danh sách 10 barcode cần loại bỏ =====\nEXCLUDED_BARCODES = {\n    \"8968900015796\",\n    \"8968900009665\",\n    \"8968900015628\",\n    \"8968900008446\",\n    \"8968900011279\",\n    \"8968900009030\",\n    \"8968900009764\",\n    \"8968900008705\",\n    \"8968900012566\",\n    \"8968900010920\",\n    \"8968900016618\",\n}\n\n# ===== 2. Lấy toàn bộ item đầu vào =====\nitems = _input.all()\n\n# ===== 3. Lọc bỏ các item có barcode nằm trong danh sách =====\nfiltered_items = []\n\nfor item in items:\n    barcode = item.json.get(\"x_studio_barcode\")\n\n    # Nếu không nằm trong list loại trừ → giữ lại\n    if barcode not in EXCLUDED_BARCODES:\n        filtered_items.append(item)\n\n# ===== 4. Trả kết quả để gửi sang Merge =====\nreturn filtered_items\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        -288
+      ],
+      "id": "78bcb611-2fbe-4ee9-bbdf-5b2e2ae89ba7",
+      "name": "Lọc 3code đã mất lâu"
+    }
+  ],
+  "pinData": {
+    "Telegram Trigger1": [
+      {
+        "json": {
+          "update_id": 843965902,
+          "message": {
+            "message_id": 454,
+            "from": {
+              "id": 587193310,
+              "is_bot": false,
+              "first_name": "Jeremy",
+              "last_name": "Nguyen",
+              "username": "Jeremystack",
+              "language_code": "en"
+            },
+            "chat": {
+              "id": 587193310,
+              "first_name": "Jeremy",
+              "last_name": "Nguyen",
+              "username": "Jeremystack",
+              "type": "private"
+            },
+            "date": 1766541887,
+            "document": {
+              "file_name": "20251224085025.xls",
+              "mime_type": "application/x-msexcel",
+              "file_id": "BQACAgUAAxkBAAIBxmlLSj_bdzlPB1gL9_y4WcWqYjAeAAKMFwACal1ZVuD87lakEIDwNgQ",
+              "file_unique_id": "AgADjBcAAmpdWVY",
+              "file_size": 119808
+            }
+          }
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Normalize ECP -> Barcode": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate barcodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Get a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get a file": {
+      "main": [
+        [
+          {
+            "node": "Get CTL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get MUON",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get CTL": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get MUON": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Deduplicate barcodes": {
+      "main": [
+        [
+          {
+            "node": "Pack scanned barcodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pack scanned barcodes": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in Python (Beta)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code in Python (Beta)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Normalize ECP -> Barcode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in Python (Beta)": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in Python (Beta)1": {
+      "main": [
+        [
+          {
+            "node": "Send a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lọc 3code đã mất lâu": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "193a1367-1338-4062-a850-590ac58a1e36",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6c24ae46ed49e5a9d5d8ba7592fca8d99cfd7862342604072d992145ba053b78"
+  },
+  "id": "a30OKDloyV5DqL8H",
+  "tags": []
+}

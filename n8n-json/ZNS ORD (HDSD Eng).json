@@ -1,0 +1,606 @@
+{
+  "name": "ZNS ORD (HDSD Eng)",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth.zaloapp.com/v4/oa/access_token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            },
+            {
+              "name": "secret_key",
+              "value": "=YOUR_ZALO_ORD_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "app_id",
+              "value": "2163459737026406066"
+            },
+            {
+              "name": "grant_type",
+              "value": "=authorization_code"
+            },
+            {
+              "name": "code_verifier",
+              "value": "GO6IIHAxCuiyr0DB8t8ELOgEmqfH5XcAOAGZBx0Nawl"
+            },
+            {
+              "name": "redirect_uri",
+              "value": "https://bonstu.site/webhook/zns-done"
+            },
+            {
+              "name": "code",
+              "value": "={{$json[\"query\"][\"code\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -528,
+        -624
+      ],
+      "id": "1a0c2aed-fb03-4aed-9058-b8b8d3088011",
+      "name": "HTTP Request1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://business.openapi.zalo.me/message/template",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $json.access_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": \"{{ $json.zalo_phone }}\",\n  \"template_id\": \"497198\",\n  \"template_data\": {\n    \"order_code\": \"{{ $json.BG }}\",\n    \"order_date\": \"{{ $json.Date }}\",\n    \"name\": \"{{ $json.user }}\"\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        32,
+        -128
+      ],
+      "id": "eda8b2e3-6d69-434d-86f5-ad8498e6be84",
+      "name": "Send ZNS",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "path": "ab6ceaa7-c567-4807-9409-b780aa577c01",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -752,
+        -624
+      ],
+      "id": "dd0dcba8-b31d-442e-adde-5a1d12f0de39",
+      "name": "Webhook1",
+      "webhookId": "ab6ceaa7-c567-4807-9409-b780aa577c01",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "3zSwHlEPnDMKyp7A",
+          "mode": "list",
+          "cachedResultName": "zalo_tokens",
+          "cachedResultUrl": "/projects/KJt13vLJkKJx1G6p/datatables/3zSwHlEPnDMKyp7A"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "1"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "refresh_token": "={{ JSON.parse($json[\"data\"]).refresh_token }}",
+            "access_token": "={{ JSON.parse($json[\"data\"]).access_token }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "access_token",
+              "displayName": "access_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "refresh_token",
+              "displayName": "refresh_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -352
+      ],
+      "id": "d00985cc-c4f3-4735-bb59-50d3ae576f07",
+      "name": "Get Refresh"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hdsd-eng",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1008,
+        -128
+      ],
+      "id": "9d5268bd-d10e-40f8-b544-eec694c92ddd",
+      "name": "Webhook2",
+      "webhookId": "08ee8094-087c-41fd-85be-721ba28ad16e"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -144,
+        -144
+      ],
+      "id": "fddd211e-b1f5-4433-9145-efe9b64590c0",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "3zSwHlEPnDMKyp7A",
+          "mode": "list",
+          "cachedResultName": "zalo_tokens",
+          "cachedResultUrl": "/projects/KJt13vLJkKJx1G6p/datatables/3zSwHlEPnDMKyp7A"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "1"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -736,
+        -352
+      ],
+      "id": "6e809b43-76b3-47a2-a50b-0e33c9bd0c72",
+      "name": "Get Token"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "3zSwHlEPnDMKyp7A",
+          "mode": "list",
+          "cachedResultName": "zalo_tokens",
+          "cachedResultUrl": "/projects/KJt13vLJkKJx1G6p/datatables/3zSwHlEPnDMKyp7A"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "=1"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user": "={{ $json.body.x_studio_tn_khch_hng }}",
+            "BG": "={{ $json.body.name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "access_token",
+              "displayName": "access_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "refresh_token",
+              "displayName": "refresh_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "zalo_phone",
+              "displayName": "zalo_phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "BG",
+              "displayName": "BG",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "user",
+              "displayName": "user",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -128
+      ],
+      "id": "ac3fdf63-3fde-492e-aca8-0e1838846f78",
+      "name": "Update Infomation of BG"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "3zSwHlEPnDMKyp7A",
+          "mode": "list",
+          "cachedResultName": "zalo_tokens_ORD",
+          "cachedResultUrl": "/projects/KJt13vLJkKJx1G6p/datatables/3zSwHlEPnDMKyp7A"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "=1"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "zalo_phone": "={{ $json.zalo_phone }}",
+            "Date": "={{ $json.date_ddmmyyyy }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "access_token",
+              "displayName": "access_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "refresh_token",
+              "displayName": "refresh_token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "zalo_phone",
+              "displayName": "zalo_phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "BG",
+              "displayName": "BG",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "user",
+              "displayName": "user",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        64
+      ],
+      "id": "287ef96d-e89a-4669-ba43-03418af99666",
+      "name": "Update Phone Number"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth.zaloapp.com/v4/oa/access_token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            },
+            {
+              "name": "secret_key",
+              "value": "YOUR_ZALO_ORD_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "app_id",
+              "value": "2163459737026406066"
+            },
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "refresh_token",
+              "value": "={{$json.refresh_token}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -576,
+        -352
+      ],
+      "id": "b4d9493b-4329-4390-a41a-f2a41bf383a6",
+      "name": "Get Refresh Token"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const body = item.json.body || {};\n\n  // ---------- PHONE NORMALIZE ----------\n  let phone = body.x_studio_phone || \"\";\n  phone = phone.replace(/\\D/g, \"\");      // remove non-digits\n\n  if (phone.startsWith(\"0\")) {\n    phone = \"+84\" + phone.slice(1);\n  }\n  item.json.zalo_phone = phone;\n\n  // ---------- DATE FORMAT DD/MM/YYYY ----------\n  const rawDate = body.date_order;       // e.g. \"2025-11-17 02:40:31\"\n  if (rawDate) {\n    const d = new Date(rawDate.replace(\" \", \"T\"));\n    const dd = String(d.getDate()).padStart(2, \"0\");\n    const mm = String(d.getMonth() + 1).padStart(2, \"0\");\n    const yyyy = d.getFullYear();\n    item.json.date_ddmmyyyy = `${dd}/${mm}/${yyyy}`;   // → \"17/11/2025\"\n  } else {\n    item.json.date_ddmmyyyy = \"\";\n  }\n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        64
+      ],
+      "id": "a570e6e4-367c-47eb-8f89-aca48dba5c7f",
+      "name": "Normalize Phone"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook1": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Refresh": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Get Token",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Infomation of BG",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Normalize Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Send ZNS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Token": {
+      "main": [
+        [
+          {
+            "node": "Get Refresh Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Infomation of BG": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Update Phone Number": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Refresh Token": {
+      "main": [
+        [
+          {
+            "node": "Get Refresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Phone": {
+      "main": [
+        [
+          {
+            "node": "Update Phone Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "versionId": "d6dd5229-3ad8-418e-9dc2-06ce4a956cec",
+  "meta": {
+    "instanceId": "6c24ae46ed49e5a9d5d8ba7592fca8d99cfd7862342604072d992145ba053b78"
+  },
+  "id": "QclUoHPKylOYNbLc",
+  "tags": []
+}

@@ -1,0 +1,16 @@
+services:
+  app:
+    image: auto-workflow:latest
+    container_name: auto-workflow
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/app/data
+    volumes:
+      - workflow-data:/app/data
+
+volumes:
+  workflow-data:

@@ -1,0 +1,363 @@
+{
+  "name": "Delivery Tracking",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "=project.task",
+        "operation": "getAll",
+        "options": {
+          "fieldsList": [
+            "partner_phone",
+            "partner_id",
+            "x_studio_ma_don_hang",
+            "x_studio_nhan_vien",
+            "planned_date_begin",
+            "x_studio_status_giao_hng"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "display_name",
+              "operator": "like",
+              "value": "GH-KH"
+            },
+            {
+              "fieldName": "partner_phone",
+              "value": "={{ $json.phone }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        -208
+      ],
+      "id": "e7e0b77b-a605-464b-9f19-6be78836b075",
+      "name": "Get many items",
+      "alwaysOutputData": false,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fsm",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -592,
+        -208
+      ],
+      "id": "1f684906-bbf9-4133-8db2-ab1bd62dfeab",
+      "name": "Webhook",
+      "webhookId": "4ebbd73a-0eb7-4b51-8ffd-f4577aa596cc"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lấy số điện thoại khách gửi lên từ Webhook\nconst phoneRaw = $json.body?.phone || \"\";\n\n// Giữ lại CHỈ chữ số\nlet digits = phoneRaw.replace(/\\D/g, \"\"); // \"0772990730\", \"84772990730\", ...\n\nif (!digits) {\n  return [{ phone: null }];\n}\n\n// Nếu bắt đầu bằng 0  → đổi thành 84xxxxxxx\nif (digits.startsWith(\"0\")) {\n  digits = \"84\" + digits.slice(1); // \"84772990730\"\n}\n\n// Nếu đã bắt đầu bằng 84 (hoặc nhập sẵn 84xxxx) thì giữ 84 và bỏ 84 đi để lấy phần sau\nif (digits.startsWith(\"84\")) {\n  digits = digits.slice(2); // \"772990730\"\n}\n\n// Đảm bảo còn lại là 9 số → mobile VN\ndigits = digits.padStart(9, \"0\"); // \"772990730\"\n\n// Format lại dạng +84 XXX XXX XXX\nconst formatted = `+84 ${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6, 9)}`;\n\n// Kết quả trả ra cho node sau\nreturn [\n  {\n    phone: formatted, // \"+84 772 990 730\"\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -368,
+        -208
+      ],
+      "id": "5f5a3872-d03b-4c9f-acd5-985b7efeadac",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// -------- Helpers --------\n\nfunction deliveryStatusVN(status) {\n  if (!status) return \"Đang cập nhật\";\n  const s = status.toString().trim().toLowerCase();\n\n  if (s === \"02_changes_requested\") return \"Đã tiếp nhận\";\n  if (s === \"01_in_progress\") return \"Đang xử lý giao hàng\";\n  if (s === \"1_done\") return \"Đã giao hàng\";\n\n  return \"Đang cập nhật\";\n}\n\nfunction cleanStaffName(raw) {\n  if (!raw) return null;\n  const parts = raw.split(\",\");\n  return parts[parts.length - 1].trim();\n}\n\nfunction formatDateVN(dateString) {\n  if (!dateString) return null;\n  const d = dateString.split(\" \")[0];\n  const [year, month, day] = d.split(\"-\");\n  return `${day}/${month}/${year}`;\n}\n\n// -------- Main --------\n\nconst items = $input.all();\n\nconst productLines = [];\nconst deliveryTasks = [];\n\nfor (const item of items) {\n  const r = item.json;\n\n  if (r.product_id) {\n    // Sale Order Line\n    productLines.push(r);\n  } else if (r.x_studio_ma_don_hang) {\n    // Field Service / Delivery Task\n    deliveryTasks.push(r);\n  }\n}\n\n// 1) Gom sản phẩm theo product_id (KHÔNG cộng dồn, luôn lấy qty của dòng)\nconst productMap = {};\n\nfor (const line of productLines) {\n  const prod = line.product_id || [];\n  const prodId = prod[0];\n  const prodName = prod[1] || null;\n  const qty = Number(line.product_uom_qty || 0);\n\n  if (!prodId) continue;\n\n  if (!productMap[prodId]) {\n    productMap[prodId] = {\n      productId: prodId,\n      name: prodName,\n      quantity: qty,  // lấy thẳng qty của dòng\n    };\n  } else {\n    // Nếu có nhiều dòng trùng product, ưu tiên qty “lớn nhất” cho an toàn\n    productMap[prodId].quantity = Math.max(productMap[prodId].quantity, qty);\n    // Hoặc nếu muốn chỉ lấy dòng cuối: productMap[prodId].quantity = qty;\n  }\n}\n\nconst products = Object.values(productMap);\n\n// 2) Xử lý các lần giao\nlet deliveries = deliveryTasks.map((r) => {\n  const rawDate = r.planned_date_begin || null;\n  const dateObj = rawDate ? new Date(rawDate.replace(\" \", \"T\")) : null;\n\n  return {\n    id: r.id,\n    orderCode: r.x_studio_ma_don_hang || null,\n    phone: r.partner_phone || null,\n    customerName: Array.isArray(r.partner_id) ? r.partner_id[1] : null,\n    staffName: Array.isArray(r.x_studio_nhan_vien)\n      ? cleanStaffName(r.x_studio_nhan_vien[1])\n      : null,\n    status: deliveryStatusVN(r.x_studio_status_giao_hng),\n    rawStatus: r.x_studio_status_giao_hng || null,\n    deliveryDate: formatDateVN(rawDate),\n    deliveryDateRaw: rawDate,\n    deliveryDateObj: dateObj,\n  };\n});\n\n// Sort lần giao theo ngày\ndeliveries = deliveries.sort((a, b) => {\n  if (!a.deliveryDateObj && !b.deliveryDateObj) return 0;\n  if (!a.deliveryDateObj) return 1;\n  if (!b.deliveryDateObj) return -1;\n  return a.deliveryDateObj - b.deliveryDateObj;\n});\n\n// Thông tin chung\nlet orderCode = null;\nlet customerName = null;\nlet phone = null;\n\nif (deliveries.length > 0) {\n  orderCode = deliveries[0].orderCode;\n  customerName = deliveries[0].customerName;\n  phone = deliveries[0].phone;\n} else if (productLines.length > 0) {\n  const r = productLines[0];\n  orderCode = r.origin || null;\n  customerName = Array.isArray(r.partner_id) ? r.partner_id[1] : null;\n}\n\n// Output cho FE\nreturn [\n  {\n    success: true,\n    orderCode,\n    customerName,\n    phone,\n    products,\n    deliveries,\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -304
+      ],
+      "id": "b7d366c2-0d0f-497d-b7b7-60ac549105b7",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1056,
+        -272
+      ],
+      "id": "44a2bc02-f5e3-4822-85d5-922b07597d63",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "sale.order.line",
+        "operation": "getAll",
+        "limit": "=5",
+        "options": {
+          "fieldsList": [
+            "product_id",
+            "product_qty"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "order_id",
+              "operator": "in",
+              "value": "=BG-202508-2674"
+            },
+            {
+              "fieldName": "product_id",
+              "operator": "notEqual",
+              "value": "={{ null }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        48,
+        -32
+      ],
+      "id": "945114a5-3de8-4e06-b1d6-8b842ff57977",
+      "name": "Get many items1",
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Run once for all items\nconst seen = new Set();\nconst output = [];\n\nfor (const item of items) {\n    const pidArr = item.json.product_id;\n\n    // Safety check: ensure array exists & has name part\n    if (!Array.isArray(pidArr) || typeof pidArr[1] !== \"string\") {\n        continue; // skip invalid rows\n    }\n\n    const pid = pidArr[0];\n    const name = pidArr[1].toLowerCase();\n\n    // 1) Filter OUT \"Order Value\"\n    if (name.includes(\"order value\")) {\n        continue;\n    }\n\n    // 2) Remove duplicates by product_id integer\n    if (seen.has(pid)) {\n        continue;\n    }\n\n    seen.add(pid);\n    output.push(item);\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        -32
+      ],
+      "id": "63b06dda-032b-4a06-a2c7-4cefb5034244",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "x_studio_ma_don_hang",
+        "joinMode": "keepEverything",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        400,
+        -304
+      ],
+      "id": "4d415c8d-d913-4668-9998-56b421a5c117",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "stock.picking",
+        "operation": "getAll",
+        "options": {
+          "fieldsList": [
+            "display_name",
+            "product_id",
+            "partner_id",
+            "origin"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "display_name",
+              "operator": "like",
+              "value": "GIAO"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        -496
+      ],
+      "id": "32ad7e98-eb8a-4dd9-85e4-d5d1b681a83f",
+      "name": "Get many items2",
+      "alwaysOutputData": false,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "stock.move",
+        "operation": "getAll",
+        "options": {
+          "fieldsList": [
+            "product_id",
+            "partner_id",
+            "origin",
+            "product_uom_qty"
+          ]
+        },
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "origin",
+              "value": "={{ $json.x_studio_ma_don_hang }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.odoo",
+      "typeVersion": 1,
+      "position": [
+        112,
+        -384
+      ],
+      "id": "ce74f7ee-8fc0-4f79-9900-8364475a9878",
+      "name": "Get many items3",
+      "alwaysOutputData": false,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many items": {
+      "main": [
+        [
+          {
+            "node": "Get many items3",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Get many items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many items1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        []
+      ]
+    },
+    "Get many items3": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "versionId": "c33281cc-3d37-4ad1-8e69-0ae891944d3e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6c24ae46ed49e5a9d5d8ba7592fca8d99cfd7862342604072d992145ba053b78"
+  },
+  "id": "umUcm1fsOBmyhoU8",
+  "tags": []
+}

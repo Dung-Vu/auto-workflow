@@ -1,0 +1,9 @@
+.env
+zalo_tokens.json
+__pycache__/
+*.pyc
+*.pyo
+auto-workflow.log
+venv/
+.venv/
+zalo_tokens_bon.json

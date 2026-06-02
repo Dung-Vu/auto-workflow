@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Ported from: Create Contact Odoo / Code node
 PARTNER_TYPE_MAP = {
     "": "CN",
-    "none of the above": "CN",
+    "homeowner": "CN",
     "architect": "DB - Design and build",
     "contractor": "CONS - Contractor",
     "contractor - residential": "CONS - Contractor",

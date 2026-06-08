@@ -1,0 +1,226 @@
+{
+  "name": "Create Contact Odoo Bon",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "accessToken",
+        "topic": "customers/create"
+      },
+      "id": "d02815c6-bd9f-4f5d-9c35-efd1cb41e4ba",
+      "name": "Shopify Trigger",
+      "type": "n8n-nodes-base.shopifyTrigger",
+      "position": [
+        192,
+        400
+      ],
+      "typeVersion": 1,
+      "webhookId": "74e9d3b3-daa5-4ecd-ae62-7347311fc81e",
+      "alwaysOutputData": false,
+      "executeOnce": false,
+      "credentials": {
+        "shopifyAccessTokenApi": {
+          "id": "BONARIO_SHOPIFY_CREDENTIAL_ID",
+          "name": "Shopify Access Token - Bonario"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "res.partner",
+        "operation": "getAll",
+        "limit": 1,
+        "options": {},
+        "filterRequest": {
+          "filter": [
+            {
+              "fieldName": "email",
+              "value": "={{ ($json.email || '').trim().toLowerCase() }}"
+            }
+          ]
+        }
+      },
+      "id": "f14c3934-da4a-4b63-90f7-620469d1eb56",
+      "name": "Search Odoo Contact",
+      "type": "n8n-nodes-base.odoo",
+      "position": [
+        688,
+        400
+      ],
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Shopify Bonario → Odoo Contact Data Processor\n// Metafield key: custom.bn_1 (Bạn là)\n// Partner type mapping: Vietnamese values\n\nconst toStringSafe = (value) => (value ?? '').toString().trim();\n\n// Get base customer data from Shopify trigger\nconst shop = $('Shopify Trigger').item?.json ?? {};\n\n// Load metafields\nlet metafields = [];\nif (Array.isArray(shop.metafields)) {\n  metafields = shop.metafields;\n} else {\n  const metaResp = $('HTTP Request')?.item?.json ?? {};\n  metafields = Array.isArray(metaResp.metafields) ? metaResp.metafields : [];\n}\n\nconst toMetafieldArray = (raw) => {\n  if (!raw) return [];\n  if (Array.isArray(raw)) return raw;\n  if (Array.isArray(raw.edges)) {\n    return raw.edges.map((edge) => edge?.node ?? edge).filter(Boolean);\n  }\n  return [];\n};\nmetafields = toMetafieldArray(metafields);\n\n// Helper to get metafield by key (supports both 'custom.bn_1' and 'bn_1')\nconst getMeta = (key) => {\n  const normalizedKey = toStringSafe(key).toLowerCase();\n  const meta = metafields.find(\n    (item) => {\n      const itemKey = toStringSafe(item?.key).toLowerCase();\n      return itemKey === normalizedKey || itemKey.endsWith('.' + normalizedKey);\n    }\n  );\n  return toStringSafe(meta?.value);\n};\n\n// Extract existing contact\nconst extractExistingContact = () => {\n  const incoming = $input.item?.json ?? {};\n  if (!incoming) return null;\n  if (Array.isArray(incoming.records)) return incoming.records[0] ?? null;\n  if (Array.isArray(incoming.result)) return incoming.result[0] ?? null;\n  return incoming;\n};\nconst existingContact = extractExistingContact();\nconst existingId = existingContact?.id ?? null;\n\n// Core data\nconst rawEmail = toStringSafe(shop.email);\nconst normalizedEmail = rawEmail.toLowerCase();\n\n// Company name\nconst companyMeta = getMeta('company_name') || getMeta('company name') || getMeta('companyname');\nconst companyFromAddress = toStringSafe(shop?.default_address?.company);\nconst companyName = companyMeta || companyFromAddress || '';\n\nlet fullName = [shop.first_name, shop.last_name].filter(Boolean).join(' ').trim();\nlet isCompany = Boolean(companyName);\n\nif (isCompany) {\n  fullName = companyName;\n} else if (!fullName) {\n  fullName = normalizedEmail || 'Shopify Customer';\n}\n\n// Partner type mapping — Vietnamese values from custom.bn_1\nconst youAre = getMeta('custom.bn_1') || getMeta('bn_1');\nconst youAreNormalized = toStringSafe(youAre).toLowerCase();\n\nlet partnerTypeValue = 'Others';\nswitch (youAreNormalized) {\n  case 'kiến trúc sư':\n  case 'kien truc su':\n    partnerTypeValue = 'DB - Design and build';\n    break;\n  case 'nhà thầu dân dụng':\n  case 'nha thau dan dung':\n    partnerTypeValue = 'CONS - Contractor';\n    break;\n  case 'nhà thiết kế nội thất':\n  case 'nha thiet ke noi that':\n    partnerTypeValue = 'DB - Design and build';\n    break;\n  case 'chủ nhà':\n  case 'chu nha':\n    partnerTypeValue = 'CN';\n    break;\n  case '':\n  case 'none of the above':\n    partnerTypeValue = 'CN';\n    break;\n  default:\n    partnerTypeValue = 'Others';\n    break;\n}\n\n// Phone normalization\nconst resolvePhoneCandidates = () => {\n  const baseCandidates = [\n    shop.phone,\n    shop.phone_number,\n    ...(Array.isArray(shop.addresses)\n      ? shop.addresses.flatMap((addr) => [addr?.phone, addr?.phone_number])\n      : []),\n    shop.default_address?.phone,\n    shop.default_address?.phone_number,\n  ];\n  return baseCandidates.map(toStringSafe).filter(Boolean);\n};\n\nconst phoneCandidates = resolvePhoneCandidates();\nconst phoneRaw = phoneCandidates[0] ?? '';\nconst phoneClean = phoneRaw.replace(/[()\\-\\.\\s]/g, '');\n\n// Product preferences (fuzzy match)\nconst getMetaFuzzy = (...patterns) => {\n  for (const m of metafields) {\n    const metaKey = toStringSafe(m?.key).toLowerCase();\n    for (const p of patterns) {\n      if (p.toLowerCase().includes(metaKey) || metaKey.includes(p.toLowerCase())) {\n        return toStringSafe(m?.value);\n      }\n    }\n  }\n  return '';\n};\n\nconst normalizeListValue = (raw) => {\n  if (!raw) return '';\n  if (raw.startsWith('[') && raw.endsWith(']')) {\n    try {\n      const items = JSON.parse(raw);\n      if (Array.isArray(items)) return items.join(', ');\n    } catch (e) {}\n  }\n  return raw;\n};\n\nconst productPrefsRaw = getMetaFuzzy(\n  'select_the_products', 'products_to_explore', 'product_preferences',\n  'product_interests', 'select_the_products_youd_like_to_explore'\n);\nconst productPrefs = normalizeListValue(productPrefsRaw);\n\n// Final output\nlet jsonOutput = {\n  existing: Boolean(existingId),\n  existing_id: existingId,\n  email: normalizedEmail,\n  phone_clean: phoneClean,\n  company_name: companyName,\n  you_are: youAre,\n  x_partner_type: partnerTypeValue,\n  is_company: isCompany,\n  product_preferences: productPrefs,\n  _debug_shop_payload: shop,\n};\n\nif (isCompany) {\n  jsonOutput.name = companyName;\n  jsonOutput.x_studio_i_din_cng_ty = [shop.first_name, shop.last_name]\n    .filter(Boolean).join(' ').trim();\n} else {\n  jsonOutput.name = [shop.first_name, shop.last_name].filter(Boolean).join(' ').trim();\n  jsonOutput.x_studio_i_din_cng_ty = '';\n}\n\nreturn jsonOutput;"
+      },
+      "id": "f8e20d99-f0b0-4c7c-a2f6-15ba872caeed",
+      "name": "Code",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        880,
+        400
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "resource": "custom",
+        "customResource": "res.partner",
+        "fieldsToCreateOrUpdate": {
+          "fields": [
+            {
+              "fieldName": "name",
+              "fieldValue": "={{ $json.name }}"
+            },
+            {
+              "fieldName": "email",
+              "fieldValue": "={{ $json.email }}"
+            },
+            {
+              "fieldName": "phone",
+              "fieldValue": "={{ $json.phone_clean }}"
+            },
+            {
+              "fieldName": "is_company",
+              "fieldValue": "={{ $json.is_company }}"
+            },
+            {
+              "fieldName": "x_studio_partner_type",
+              "fieldValue": "={{ $json.x_partner_type }}"
+            },
+            {
+              "fieldName": "user_id",
+              "fieldValue": "6"
+            },
+            {
+              "fieldName": "x_studio_sales_team",
+              "fieldValue": ""
+            },
+            {
+              "fieldName": "x_studio_source",
+              "fieldValue": "40"
+            },
+            {
+              "fieldName": "company_id",
+              "fieldValue": "1"
+            },
+            {
+              "fieldName": "x_studio_membership",
+              "fieldValue": "true"
+            }
+          ]
+        }
+      },
+      "id": "9068923b-6188-490d-b78d-e5735f3e50dc",
+      "name": "Create Contact",
+      "type": "n8n-nodes-base.odoo",
+      "position": [
+        1088,
+        400
+      ],
+      "typeVersion": 1,
+      "credentials": {
+        "odooApi": {
+          "id": "FoJ1V49If84ka5EB",
+          "name": "Odoo account - DB Primary"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://56562d-2.myshopify.com/admin/api/2024-07/customers/{{ $json.id }}/metafields.json\n",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Shopify-Access-Token",
+              "value": "shpat_YOUR_SHOPIFY_TOKEN"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        400
+      ],
+      "id": "9fee1486-2241-4eb7-a1fc-a1034172b0ef",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "M0nNSmzbypqhk7r5",
+          "name": "Header Auth account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Shopify Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Odoo Contact": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Create Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Search Odoo Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "bonario-contact-sync-v1",
+  "meta": {
+    "instanceId": "6c24ae46ed49e5a9d5d8ba7592fca8d99cfd7862342604072d992145ba053b78"
+  },
+  "id": "CreateContactOdooBon",
+  "tags": []
+}

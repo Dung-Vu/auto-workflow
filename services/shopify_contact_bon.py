@@ -1,8 +1,7 @@
 """
-Shopify → Odoo Contact Sync Service.
-Replaces the "Create Contact Odoo" n8n workflow.
-
-Flow: Shopify webhook (customer/create) → fetch metafields → normalize → create Odoo contact.
+Shopify Bonario → Odoo Contact Sync Service.
+Store: 56562d-2.myshopify.com
+Metafield key: custom.bn_1 (Bạn là) — Vietnamese values
 """
 
 import json
@@ -16,44 +15,47 @@ from utils.phone import clean_phone_for_shopify
 logger = logging.getLogger(__name__)
 
 
-# ─── Partner Type Mapping ───
-# Ported from: Create Contact Odoo / Code node
-PARTNER_TYPE_MAP = {
+# ─── Partner Type Mapping (Vietnamese values from custom.bn_1) ───
+PARTNER_TYPE_MAP_BON = {
     "": "CN",
-    "homeowner": "CN",
-    "architect": "DB - Design and build",
-    "contractor": "CONS - Contractor",
-    "contractor - residential": "CONS - Contractor",
-    "interior designer": "DE",
+    "kiến trúc sư": "DB - Design and build",
+    "kien truc su": "DB - Design and build",
+    "nhà thầu dân dụng": "CONS - Contractor",
+    "nha thau dan dung": "CONS - Contractor",
+    "nhà thiết kế nội thất": "DB - Design and build",
+    "nha thiet ke noi that": "DB - Design and build",
+    "chủ nhà": "CN",
+    "chu nha": "CN",
 }
 
 
 def _fetch_metafields(customer_id: int) -> list:
-    """Fetch Shopify customer metafields via REST API."""
+    """Fetch Shopify customer metafields via REST API (Bonario store)."""
     url = (
-        f"https://{Config.SHOPIFY_STORE}/admin/api/2024-07"
+        f"https://{Config.BONARIO_SHOPIFY_STORE}/admin/api/2024-07"
         f"/customers/{customer_id}/metafields.json"
     )
     resp = requests.get(
         url,
-        headers={"X-Shopify-Access-Token": Config.SHOPIFY_ACCESS_TOKEN},
+        headers={"X-Shopify-Access-Token": Config.BONARIO_SHOPIFY_ACCESS_TOKEN},
         timeout=10,
     )
     if resp.status_code == 200:
         metafields = resp.json().get("metafields", [])
-        logger.info(f"Metafields for customer {customer_id}: {len(metafields)} found")
+        logger.info(f"Bonario metafields for customer {customer_id}: {len(metafields)} found")
         for m in metafields:
             logger.info(f"  meta: ns={m.get('namespace')} key={m.get('key')} val={str(m.get('value'))[:120]}")
         return metafields
-    logger.warning(f"Failed to fetch metafields for customer {customer_id}: {resp.status_code}")
+    logger.warning(f"Failed to fetch Bonario metafields for customer {customer_id}: {resp.status_code}")
     return []
 
 
 def _get_meta(metafields: list, key: str) -> str:
-    """Get metafield value by key (case-insensitive)."""
+    """Get metafield value by key (supports both 'custom.bn_1' and 'bn_1')."""
     key_lower = key.lower().strip()
     for m in metafields:
-        if (m.get("key") or "").lower().strip() == key_lower:
+        meta_key = (m.get("key") or "").lower().strip()
+        if meta_key == key_lower or meta_key.endswith("." + key_lower):
             return (m.get("value") or "").strip()
     return ""
 
@@ -63,7 +65,7 @@ def _get_meta_fuzzy(metafields: list, *patterns: str) -> str:
     for m in metafields:
         meta_key = (m.get("key") or "").lower().strip()
         for p in patterns:
-            if p.lower() in meta_key:
+            if p.lower() in meta_key or meta_key in p.lower():
                 return (m.get("value") or "").strip()
     return ""
 
@@ -89,17 +91,14 @@ def _resolve_phone(shop_data: dict) -> str:
         shop_data.get("phone_number"),
     ]
 
-    # Check addresses
     for addr in shop_data.get("addresses", []):
         candidates.append(addr.get("phone"))
         candidates.append(addr.get("phone_number"))
 
-    # Check default_address
     default_addr = shop_data.get("default_address") or {}
     candidates.append(default_addr.get("phone"))
     candidates.append(default_addr.get("phone_number"))
 
-    # Return first non-empty
     for c in candidates:
         cleaned = clean_phone_for_shopify(c or "")
         if cleaned:
@@ -107,10 +106,9 @@ def _resolve_phone(shop_data: dict) -> str:
     return ""
 
 
-def sync_shopify_customer(shop_data: dict) -> dict:
+def sync_bonario_customer(shop_data: dict) -> dict:
     """
-    Process a Shopify customer/create webhook payload and create an Odoo contact.
-    Ported from: Create Contact Odoo workflow (all 5 nodes).
+    Process a Shopify Bonario customer/create webhook payload and create an Odoo contact.
 
     Args:
         shop_data: The Shopify webhook JSON payload for customer/create event.
@@ -121,10 +119,10 @@ def sync_shopify_customer(shop_data: dict) -> dict:
     customer_id = shop_data.get("id")
     raw_email = (shop_data.get("email") or "").strip().lower()
 
-    # ─── Fetch metafields ────
+    # ── Fetch metafields ───
     metafields = _fetch_metafields(customer_id)
 
-    # ─── Check existing contact in Odoo ───
+    # ── Check existing contact in Odoo ───
     existing = odoo.search_read(
         "res.partner",
         [("email", "=", raw_email)],
@@ -133,7 +131,7 @@ def sync_shopify_customer(shop_data: dict) -> dict:
     )
 
     if existing:
-        logger.info(f"Contact already exists in Odoo: {existing[0]['id']} ({raw_email})")
+        logger.info(f"Bonario contact already exists in Odoo: {existing[0]['id']} ({raw_email})")
         return {
             "status": "skipped",
             "reason": "contact_exists",
@@ -162,14 +160,14 @@ def sync_shopify_customer(shop_data: dict) -> dict:
         name = full_name or raw_email or "Shopify Customer"
         representative = ""
 
-    # ─── Partner type mapping ───
-    you_are = _get_meta(metafields, "you_are").lower().strip()
-    partner_type = PARTNER_TYPE_MAP.get(you_are, "Others")
+    # ─── Partner type mapping (Vietnamese values from custom.bn_1) ───
+    you_are = _get_meta(metafields, "custom.bn_1").lower().strip()
+    partner_type = PARTNER_TYPE_MAP_BON.get(you_are, "Others")
 
-    # ─── Phone ───
+    # ── Phone ───
     phone_clean = _resolve_phone(shop_data)
 
-    # ─── Product Preferences (Select the products you'd like to explore) ───
+    # ─── Product Preferences ───
     product_prefs_raw = _get_meta_fuzzy(
         metafields,
         "select_the_products",
@@ -179,19 +177,19 @@ def sync_shopify_customer(shop_data: dict) -> dict:
         "select_the_products_youd_like_to_explore",
     )
     product_prefs = _normalize_list_value(product_prefs_raw)
-    logger.info(f"Product preferences resolved: raw={product_prefs_raw!r} → normalized={product_prefs!r}")
+    logger.info(f"Bonario product preferences: raw={product_prefs_raw!r} → normalized={product_prefs!r}")
 
-    # ─── Create Odoo contact ───
+    # ─── Create Odoo contact ──
     values = {
         "name": name,
         "email": raw_email,
         "phone": phone_clean,
         "is_company": is_company,
         "x_studio_partner_type": partner_type,
-        "user_id": Config.SHOPIFY_ODOO_SALESPERSON_ID,
-        "x_studio_sales_team": Config.SHOPIFY_ODOO_SALES_TEAM_ID,
-        "x_studio_source": Config.SHOPIFY_ODOO_SOURCE_ID,
-        "company_id": Config.SHOPIFY_ODOO_COMPANY_ID,
+        "user_id": Config.BONARIO_ODOO_SALESPERSON_ID,
+        "x_studio_sales_team": Config.BONARIO_ODOO_SALES_TEAM_ID,
+        "x_studio_source": Config.BONARIO_ODOO_SOURCE_ID,
+        "company_id": Config.BONARIO_ODOO_COMPANY_ID,
         "x_studio_membership": True,
     }
 
@@ -204,10 +202,10 @@ def sync_shopify_customer(shop_data: dict) -> dict:
     odoo_id = odoo.create(
         "res.partner",
         values,
-        context={"allowed_company_ids": [Config.SHOPIFY_ODOO_COMPANY_ID]},
+        context={"allowed_company_ids": [Config.BONARIO_ODOO_COMPANY_ID]},
     )
 
-    logger.info(f"Created Odoo contact: {odoo_id} — {name} ({raw_email})")
+    logger.info(f"Created Bonario Odoo contact: {odoo_id} — {name} ({raw_email})")
     return {
         "status": "created",
         "odoo_id": odoo_id,

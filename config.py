@@ -23,17 +23,28 @@ class Config:
     ODOO_API_KEY = os.getenv("ODOO_API_KEY", "")
     ODOO_USER = os.getenv("ODOO_USER", "")  # Optional: only needed if ODOO_UID not set
 
+    # Odoo — Deadline Watcher
+    DEADLINE_POLL_INTERVAL = int(os.getenv("DEADLINE_POLL_INTERVAL", "30"))  # seconds
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")
 
-    # Shopify
+    # Shopify — Ordinaire
     SHOPIFY_STORE = os.getenv("SHOPIFY_STORE", "")
     SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
     SHOPIFY_ODOO_COMPANY_ID = int(os.getenv("SHOPIFY_ODOO_COMPANY_ID", "9"))
     SHOPIFY_ODOO_SALESPERSON_ID = int(os.getenv("SHOPIFY_ODOO_SALESPERSON_ID", "6"))
     SHOPIFY_ODOO_SALES_TEAM_ID = int(os.getenv("SHOPIFY_ODOO_SALES_TEAM_ID", "15"))
     SHOPIFY_ODOO_SOURCE_ID = int(os.getenv("SHOPIFY_ODOO_SOURCE_ID", "46"))
+
+    # Shopify — Bonario
+    BONARIO_SHOPIFY_STORE = os.getenv("BONARIO_SHOPIFY_STORE", "")
+    BONARIO_SHOPIFY_ACCESS_TOKEN = os.getenv("BONARIO_SHOPIFY_ACCESS_TOKEN", "")
+    BONARIO_ODOO_COMPANY_ID = int(os.getenv("BONARIO_ODOO_COMPANY_ID") or "1")
+    BONARIO_ODOO_SALESPERSON_ID = int(os.getenv("BONARIO_ODOO_SALESPERSON_ID") or "6")
+    BONARIO_ODOO_SALES_TEAM_ID = int(os.getenv("BONARIO_ODOO_SALES_TEAM_ID") or "15")
+    BONARIO_ODOO_SOURCE_ID = int(os.getenv("BONARIO_ODOO_SOURCE_ID") or "46")
 
     # Zalo ZNS — ORD (Ordinaire) App
     ZALO_APP_ID = os.getenv("ZALO_APP_ID", "")

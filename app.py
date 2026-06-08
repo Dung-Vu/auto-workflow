@@ -40,9 +40,11 @@ from config import Config
 from utils.phone import normalize_phone_zalo
 from services.zalo_zns import send_zns, handle_authorization_callback, start_auto_refresh, get_token_status
 from services.shopify_contact import sync_shopify_customer
+from services.shopify_contact_bon import sync_bonario_customer
 from services.delivery_tracking import track_delivery
 from services.rfid_reconciliation import reconcile
 from services.auto_conducted import run_auto_conducted, start_conducted_scheduler, get_conducted_status
+from services.deadline_watcher import start_deadline_watcher, get_deadline_watcher_status
 
 app = Flask(__name__)
 
@@ -59,6 +61,7 @@ def health():
         "timestamp": datetime.now().isoformat(),
         "zns_tokens": get_token_status(),
         "conducted": get_conducted_status(),
+        "deadline_watcher": get_deadline_watcher_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -92,6 +95,24 @@ def shopify_customer_create():
         return jsonify(result), 200
     except Exception as e:
         logger.exception("Error in shopify_customer_create")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/webhook/shopify-bonario/customer-create", methods=["POST"])
+def shopify_bonario_customer_create():
+    """
+    Webhook endpoint for Shopify Bonario customer/create event.
+    Replaces: Create Contact Odoo Bon workflow.
+    """
+    try:
+        data = request.get_json(force=True)
+        logger.info(f"Bonario Shopify webhook payload keys: {list(data.keys())}")
+        logger.info(f"Bonario Shopify webhook metafields in payload: {data.get('metafields', 'NOT FOUND')}")
+        result = sync_bonario_customer(data)
+        logger.info(f"Bonario Shopify sync result: {result}")
+        return jsonify(result), 200
+    except Exception as e:
+        logger.exception("Error in shopify_bonario_customer_create")
         return jsonify({"error": str(e)}), 500
 
 
@@ -346,6 +367,9 @@ if __name__ == "__main__":
 
     # Start Conducted scheduler (08:00 ICT daily)
     start_conducted_scheduler()
+
+    # Start Deadline Watcher (polls mail.activity for deadline extensions)
+    start_deadline_watcher()
 
     # Start Flask
     app.run(

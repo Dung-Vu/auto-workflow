@@ -1,15 +1,15 @@
 """
-Live test for Deadline Watcher v2 (with anti-deletion).
-Seeds snapshot, then polls every 10s.
+Live test for Deadline Watcher v3 (anti-deletion + edit tracking).
 
 Test flow:
-  1. Change a deadline in Odoo (push forward) → note appears
-  2. Delete the warning from the note → warning comes back on next poll
+  1. Change a deadline (push forward) → "ĐÃ ĐỔI DEADLINE" appears
+  2. Edit the note content → "EDITED BY" appears  
+  3. Delete a warning → it comes back
 """
 import sys, os, time, logging
 
 sys.stdout.reconfigure(encoding="utf-8")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,11 +21,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from services.deadline_watcher import (
-    _load_snapshot, _save_snapshot, _poll_and_check, _odoo_call, SNAPSHOT_FILE
+    _load_snapshot, _save_snapshot, _poll_and_check, _odoo_call,
+    _note_hash, SNAPSHOT_FILE
 )
 
 print("=" * 60)
-print("  LIVE Deadline Watcher v2 (Anti-Deletion)")
+print("  LIVE Deadline Watcher v3 (Edit Tracking)")
 print(f"  Snapshot: {os.path.abspath(SNAPSHOT_FILE)}")
 print("=" * 60)
 
@@ -33,20 +34,27 @@ print("=" * 60)
 print("\n[1] Seeding snapshot...")
 activities = _odoo_call(
     "mail.activity", "search_read", [[]],
-    {"fields": ["id", "date_deadline"]},
+    {"fields": ["id", "date_deadline", "note"]},
 ) or []
 
 snapshot = {}
 for a in activities:
-    snapshot[str(a["id"])] = {"deadline": a["date_deadline"], "warnings": []}
+    note = a.get("note") or ""
+    snapshot[str(a["id"])] = {
+        "deadline": a["date_deadline"],
+        "warnings": [],
+        "edit_logs": [],
+        "note_hash": _note_hash(note),
+    }
 
 _save_snapshot(snapshot)
 print(f"    {len(snapshot)} activities saved")
 
 # Poll loop
 print("\n[2] Polling every 10s...")
-print("    Test 1: Change a Due Date (push forward) → warning appears")
-print("    Test 2: Delete the warning text → it comes back!")
+print("    Test A: Change Due Date (push forward) --> deadline warning")
+print("    Test B: Edit the note text            --> edit log")
+print("    Test C: Delete a warning line          --> it comes back")
 print("    Ctrl+C to stop\n")
 
 try:

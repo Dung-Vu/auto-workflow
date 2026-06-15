@@ -16,8 +16,7 @@ from datetime import datetime, timedelta
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-# Setup path so we can import services
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from dotenv import load_dotenv
 load_dotenv()

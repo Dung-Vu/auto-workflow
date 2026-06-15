@@ -24,8 +24,8 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-# Token file path: DATA_DIR (Docker volume) or project root fallback
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), ".."))
+# Token file path: DATA_DIR (Docker volume) or project root data fallback
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Separate token files per app

@@ -29,6 +29,40 @@ class Config:
     # Odoo — CRM Lost Watcher
     CRM_POLL_INTERVAL = int(os.getenv("CRM_POLL_INTERVAL", "60"))  # seconds
 
+    # Odoo — Completion Days Dashboard (weekly refresh, Monday 08:00 ICT)
+    COMPLETION_DAYS_DASHBOARD_ID = int(os.getenv("COMPLETION_DAYS_DASHBOARD_ID", "278"))
+    COMPLETION_DAYS_ENABLED = os.getenv("COMPLETION_DAYS_ENABLED", "true").lower() == "true"
+
+    # Odoo — Dashboard 259 Approval (monthly refresh, 1st of month 06:00 ICT)
+    DASHBOARD_259_ID = int(os.getenv("DASHBOARD_259_ID", "259"))
+    DASHBOARD_259_APPROVAL_TYPE_ID = int(os.getenv("DASHBOARD_259_APPROVAL_TYPE_ID", "13"))
+    DASHBOARD_259_ENABLED = os.getenv("DASHBOARD_259_ENABLED", "true").lower() == "true"
+    # Separate UID for approval queries (original script used UID 145)
+    DASHBOARD_259_ODOO_UID = int(os.getenv("DASHBOARD_259_ODOO_UID", "0")) or None
+    DASHBOARD_259_ODOO_API_KEY = os.getenv("DASHBOARD_259_ODOO_API_KEY", "")
+
+    # Odoo — KHO MAU CTL Overdue (daily 11:00 ICT / 04:00 UTC)
+    CTL_ENABLED = os.getenv("CTL_ENABLED", "true").lower() == "true"
+    CTL_PICKING_TYPE_ID = int(os.getenv("CTL_PICKING_TYPE_ID", "230"))
+    CTL_LOCATION_ID = int(os.getenv("CTL_LOCATION_ID", "63"))
+    CTL_USER_ID = int(os.getenv("CTL_USER_ID", "218"))
+    CTL_ACTIVITY_TYPE_NAME = os.getenv("CTL_ACTIVITY_TYPE_NAME", "CTL - Phiếu mượn quá hạn")
+    CTL_LENDING_MIN_DATE = os.getenv("CTL_LENDING_MIN_DATE", "2026-01-01")
+
+    # Odoo — Checklist Overdue (monthly 1st, 00:00 ICT / prev day 17:00 UTC)
+    CHECKLIST_OVERDUE_ENABLED = os.getenv("CHECKLIST_OVERDUE_ENABLED", "true").lower() == "true"
+    CHECKLIST_ACTIVITY_TYPE_ID = int(os.getenv("CHECKLIST_ACTIVITY_TYPE_ID", "108"))
+
+    # Odoo — Dashboard 247 SC activities (monthly 1st, 06:00 ICT / 23:00 UTC prev day)
+    DASHBOARD_247_ID = int(os.getenv("DASHBOARD_247_ID", "271"))
+    DASHBOARD_247_ENABLED = os.getenv("DASHBOARD_247_ENABLED", "true").lower() == "true"
+
+    # Odoo — Section 3 Timeline (monthly 1st, 06:00 ICT / 23:00 UTC prev day)
+    SECTION3_TIMELINE_ENABLED = os.getenv("SECTION3_TIMELINE_ENABLED", "true").lower() == "true"
+
+    # Odoo — Section 5.2 SO-to-FSM violations (monthly 1st, 06:00 ICT / 23:00 UTC prev day)
+    SECTION5_2_ENABLED = os.getenv("SECTION5_2_ENABLED", "true").lower() == "true"
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")

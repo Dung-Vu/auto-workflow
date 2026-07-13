@@ -63,6 +63,13 @@ from services.rfid_reconciliation import reconcile
 from services.auto_conducted import run_auto_conducted, start_conducted_scheduler, get_conducted_status
 from services.deadline_watcher import start_deadline_watcher, get_deadline_watcher_status
 from services.crm_lost_watcher import start_crm_lost_watcher, get_crm_lost_status
+from services.completion_days import start_completion_days_scheduler, get_completion_days_status
+from services.dashboard_259 import start_dashboard_259_scheduler, get_dashboard_259_status
+from services.kho_mau_ctl import start_ctl_scheduler, get_ctl_status
+from services.checklist_overdue import start_checklist_overdue_scheduler, get_checklist_overdue_status
+from services.dashboard_247 import start_dashboard_247_scheduler, get_dashboard_247_status
+from services.section3_timeline import start_section3_timeline_scheduler, get_section3_timeline_status
+from services.section5_2 import start_section5_2_scheduler, get_section5_2_status
 
 app = Flask(__name__)
 
@@ -81,6 +88,13 @@ def health():
         "conducted": get_conducted_status(),
         "deadline_watcher": get_deadline_watcher_status(),
         "crm_lost_watcher": get_crm_lost_status(),
+        "completion_days": get_completion_days_status(),
+        "dashboard_259": get_dashboard_259_status(),
+        "kho_mau_ctl": get_ctl_status(),
+        "checklist_overdue": get_checklist_overdue_status(),
+        "dashboard_247": get_dashboard_247_status(),
+        "section3_timeline": get_section3_timeline_status(),
+        "section5_2": get_section5_2_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -472,6 +486,27 @@ if __name__ == "__main__":
 
     # Start CRM Lost Watcher (cancels activities on lost leads)
     start_crm_lost_watcher()
+
+    # Start Completion Days scheduler (Monday 08:00 ICT weekly)
+    start_completion_days_scheduler()
+
+    # Start Dashboard 259 Approval scheduler (1st of month 06:00 ICT)
+    start_dashboard_259_scheduler()
+
+    # Start KHO MAU CTL Overdue scheduler (daily 11:00 ICT)
+    start_ctl_scheduler()
+
+    # Start Checklist Overdue scheduler (1st of month 00:00 ICT)
+    start_checklist_overdue_scheduler()
+
+    # Start Dashboard 247 SC Activities scheduler (1st of month 06:00 ICT)
+    start_dashboard_247_scheduler()
+
+    # Start Section 3 Timeline scheduler (1st of month 06:00 ICT)
+    start_section3_timeline_scheduler()
+
+    # Start Section 5.2 SO-to-FSM Violations scheduler (1st of month 06:00 ICT)
+    start_section5_2_scheduler()
 
     # Start Flask with a production-ready WSGI server
     try:

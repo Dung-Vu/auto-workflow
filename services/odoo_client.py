@@ -145,6 +145,17 @@ class OdooClient:
 
         return self._execute_with_retry(model, "search", [domain], kwargs)
 
+    def read(self, model: str, record_ids: list, fields: list = None) -> list:
+        """Read records by IDs from Odoo."""
+        kwargs = {}
+        if fields:
+            kwargs["fields"] = fields
+        return self._execute_with_retry(model, "read", [record_ids], kwargs)
+
+    def execute(self, model: str, method: str, args: list = None, kwargs: dict = None):
+        """Generic execute_kw call for methods not covered by convenience methods."""
+        return self._execute_with_retry(model, method, args or [], kwargs or {})
+
 
 # Singleton instance
 odoo = OdooClient()

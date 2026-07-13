@@ -63,6 +63,16 @@ class Config:
     # Odoo — Section 5.2 SO-to-FSM violations (monthly 1st, 06:00 ICT / 23:00 UTC prev day)
     SECTION5_2_ENABLED = os.getenv("SECTION5_2_ENABLED", "true").lower() == "true"
 
+    # Odoo — Commission Revenue (polling, replaces base.automation ID 64)
+    COMMISSION_REVENUE_ENABLED = os.getenv("COMMISSION_REVENUE_ENABLED", "true").lower() == "true"
+    COMMISSION_REVENUE_POLL_INTERVAL = int(os.getenv("COMMISSION_REVENUE_POLL_INTERVAL", "60"))  # seconds
+    # Product category IDs excluded from commission base (discount/voucher categories)
+    COMMISSION_REVENUE_EXCLUDED_CATEGORIES = [
+        int(x) for x in os.getenv(
+            "COMMISSION_REVENUE_EXCLUDED_CATEGORIES", "19,998,999,1097"
+        ).split(",") if x.strip()
+    ]
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")

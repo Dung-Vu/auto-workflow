@@ -70,6 +70,7 @@ from services.checklist_overdue import start_checklist_overdue_scheduler, get_ch
 from services.dashboard_247 import start_dashboard_247_scheduler, get_dashboard_247_status
 from services.section3_timeline import start_section3_timeline_scheduler, get_section3_timeline_status
 from services.section5_2 import start_section5_2_scheduler, get_section5_2_status
+from services.commission_revenue import start_commission_revenue_watcher, get_commission_revenue_status
 
 app = Flask(__name__)
 
@@ -95,6 +96,7 @@ def health():
         "dashboard_247": get_dashboard_247_status(),
         "section3_timeline": get_section3_timeline_status(),
         "section5_2": get_section5_2_status(),
+        "commission_revenue": get_commission_revenue_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -507,6 +509,9 @@ if __name__ == "__main__":
 
     # Start Section 5.2 SO-to-FSM Violations scheduler (1st of month 06:00 ICT)
     start_section5_2_scheduler()
+
+    # Start Commission Revenue watcher (polls sale.order every 60s)
+    start_commission_revenue_watcher()
 
     # Start Flask with a production-ready WSGI server
     try:

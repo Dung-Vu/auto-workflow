@@ -73,6 +73,10 @@ class Config:
         ).split(",") if x.strip()
     ]
 
+    # Odoo — OP Delivery Date Sync (polling, replaces base.automation ID 80)
+    OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
+    OP_DELIVERY_DATE_POLL_INTERVAL = int(os.getenv("OP_DELIVERY_DATE_POLL_INTERVAL", "60"))  # seconds
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")

@@ -71,6 +71,7 @@ from services.dashboard_247 import start_dashboard_247_scheduler, get_dashboard_
 from services.section3_timeline import start_section3_timeline_scheduler, get_section3_timeline_status
 from services.section5_2 import start_section5_2_scheduler, get_section5_2_status
 from services.commission_revenue import start_commission_revenue_watcher, get_commission_revenue_status
+from services.op_delivery_date import start_op_delivery_date_watcher, get_op_delivery_date_status
 
 app = Flask(__name__)
 
@@ -97,6 +98,7 @@ def health():
         "section3_timeline": get_section3_timeline_status(),
         "section5_2": get_section5_2_status(),
         "commission_revenue": get_commission_revenue_status(),
+        "op_delivery_date": get_op_delivery_date_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -512,6 +514,9 @@ if __name__ == "__main__":
 
     # Start Commission Revenue watcher (polls sale.order every 60s)
     start_commission_revenue_watcher()
+
+    # Start OP Delivery Date watcher (syncs SO delivery date to picking scheduled_date)
+    start_op_delivery_date_watcher()
 
     # Start Flask with a production-ready WSGI server
     try:

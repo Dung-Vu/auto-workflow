@@ -24,7 +24,10 @@ class Config:
     ODOO_USER = os.getenv("ODOO_USER", "")  # Optional: only needed if ODOO_UID not set
 
     # Odoo — Deadline Watcher
-    DEADLINE_POLL_INTERVAL = int(os.getenv("DEADLINE_POLL_INTERVAL", "30"))  # seconds
+    DEADLINE_POLL_INTERVAL = int(os.getenv("DEADLINE_POLL_INTERVAL", "60"))  # seconds
+
+    # Odoo — CRM Lost Watcher
+    CRM_POLL_INTERVAL = int(os.getenv("CRM_POLL_INTERVAL", "60"))  # seconds
 
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None

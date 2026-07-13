@@ -122,16 +122,29 @@ def sync_bonario_customer(shop_data: dict) -> dict:
     # ── Fetch metafields ───
     metafields = _fetch_metafields(customer_id)
 
+    # ─── Phone resolution ───
+    phone_clean = _resolve_phone(shop_data)
+
     # ── Check existing contact in Odoo ───
+    domain = [("email", "=", raw_email)]
+    if phone_clean:
+        phone_digits = re.sub(r"\D", "", phone_clean)
+        if len(phone_digits) >= 9:
+            last_9 = phone_digits[-9:]
+            pattern = f"%{last_9[0:3]}%{last_9[3:6]}%{last_9[6:9]}%"
+            domain = ["|"] + domain + [("phone", "ilike", pattern)]
+        else:
+            domain = ["|"] + domain + [("phone", "ilike", f"%{phone_digits}%")]
+
     existing = odoo.search_read(
         "res.partner",
-        [("email", "=", raw_email)],
-        fields=["id", "name", "email"],
+        domain,
+        fields=["id", "name", "email", "phone"],
         limit=1,
     )
 
     if existing:
-        logger.info(f"Bonario contact already exists in Odoo: {existing[0]['id']} ({raw_email})")
+        logger.info(f"Bonario contact already exists in Odoo: {existing[0]['id']} ({raw_email} or phone match: {existing[0].get('phone')})")
         return {
             "status": "skipped",
             "reason": "contact_exists",
@@ -144,7 +157,7 @@ def sync_bonario_customer(shop_data: dict) -> dict:
         _get_meta(metafields, "company_name")
         or _get_meta(metafields, "company name")
         or _get_meta(metafields, "companyname")
-        or (shop_data.get("default_address") or {}).get("company", "").strip()
+        or ((shop_data.get("default_address") or {}).get("company") or "").strip()
     )
     is_company = bool(company_name)
 
@@ -165,7 +178,7 @@ def sync_bonario_customer(shop_data: dict) -> dict:
     partner_type = PARTNER_TYPE_MAP_BON.get(you_are, "Others")
 
     # ── Phone ───
-    phone_clean = _resolve_phone(shop_data)
+    # (resolved early for duplicate check)
 
     # ─── Product Preferences ───
     product_prefs_raw = _get_meta_fuzzy(

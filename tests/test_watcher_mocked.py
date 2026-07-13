@@ -59,6 +59,8 @@ def mock_odoo_call(model, method, args=None, kwargs=None):
 
 # Inject mock
 watcher._odoo_call = mock_odoo_call
+watcher._WATCHER_ODOO_UID = 999
+
 
 
 # ═══════════════════════════════════════════

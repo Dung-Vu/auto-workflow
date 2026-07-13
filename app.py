@@ -36,6 +36,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("auto-workflow")
 
+# Reduce noise from transient Telegram polling errors (auto-retried by library)
+# and httpx getUpdates spam
+class _TelegramTransientFilter(logging.Filter):
+    """Downgrade transient Telegram polling errors from ERROR to DEBUG."""
+    _TRANSIENT = ("RemoteProtocolError", "Bad Gateway", "Server disconnected")
+    def filter(self, record):
+        if record.levelno >= logging.ERROR:
+            msg = record.getMessage()
+            if any(t in msg for t in self._TRANSIENT):
+                record.levelno = logging.DEBUG
+                record.levelname = "DEBUG"
+        return True
+
+logging.getLogger("telegram.ext.Updater").addFilter(_TelegramTransientFilter())
+# httpx logs every getUpdates poll at INFO — reduce to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 from config import Config
 from utils.phone import normalize_phone_zalo
 from services.zalo_zns import send_zns, handle_authorization_callback, start_auto_refresh, get_token_status
@@ -45,6 +62,7 @@ from services.delivery_tracking import track_delivery
 from services.rfid_reconciliation import reconcile
 from services.auto_conducted import run_auto_conducted, start_conducted_scheduler, get_conducted_status
 from services.deadline_watcher import start_deadline_watcher, get_deadline_watcher_status
+from services.crm_lost_watcher import start_crm_lost_watcher, get_crm_lost_status
 
 app = Flask(__name__)
 
@@ -62,6 +80,7 @@ def health():
         "zns_tokens": get_token_status(),
         "conducted": get_conducted_status(),
         "deadline_watcher": get_deadline_watcher_status(),
+        "crm_lost_watcher": get_crm_lost_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -259,8 +278,10 @@ def _start_telegram_bot():
     """Start the Telegram bot in a background thread for RFID reconciliation."""
     try:
         import asyncio
+        import time
         from telegram import Update
         from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+        from telegram.request import HTTPXRequest
 
         async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Handle incoming XLS/XLSX document from Telegram."""
@@ -278,9 +299,25 @@ def _start_telegram_bot():
             await update.message.reply_text("📥 Đang xử lý file RFID...")
 
             try:
-                # Download file
-                tg_file = await context.bot.get_file(doc.file_id)
-                file_bytes = await tg_file.download_as_bytearray()
+                # Download file with retry logic
+                file_bytes = None
+                last_err = None
+                for attempt in range(3):
+                    try:
+                        tg_file = await context.bot.get_file(doc.file_id)
+                        file_bytes = await tg_file.download_as_bytearray()
+                        break
+                    except Exception as dl_err:
+                        last_err = dl_err
+                        if attempt < 2:
+                            wait = 3 * (2 ** attempt)
+                            logger.warning(
+                                f"Telegram file download failed (attempt {attempt + 1}/3): "
+                                f"{dl_err} — retrying in {wait}s"
+                            )
+                            await asyncio.sleep(wait)
+                        else:
+                            raise last_err
 
                 # Run reconciliation
                 result = reconcile(bytes(file_bytes))
@@ -308,16 +345,66 @@ def _start_telegram_bot():
                 "Bot sẽ so sánh với Odoo và trả báo cáo hàng thiếu."
             )
 
+        async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+            """Handle errors in PTB — suppress transient network errors."""
+            err = context.error
+            err_msg = str(err) if err else ""
+            transient_markers = (
+                "RemoteProtocolError", "Bad Gateway", "Server disconnected",
+                "NetworkError", "TimedOut", "Connection reset",
+            )
+            if any(m in err_msg for m in transient_markers):
+                logger.debug(f"Telegram transient error (auto-retried): {err}")
+            else:
+                logger.error(f"Telegram error: {err}", exc_info=err)
+
         async def run_bot():
-            app_tg = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
+            # Use custom HTTPXRequest with longer timeouts for file operations
+            # Also detect proxy settings from environment for networks where
+            # Telegram is blocked (HTTPS_PROXY / HTTP_PROXY)
+            proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or None
+            custom_request = HTTPXRequest(
+                connect_timeout=20.0,
+                read_timeout=60.0,
+                write_timeout=30.0,
+                pool_timeout=10.0,
+                connection_pool_size=8,
+                proxy=proxy_url,
+            )
+            # Separate request object for getUpdates long-polling:
+            # - read_timeout must be > poll_interval (default 10s from start_polling)
+            #   to avoid premature timeouts during long-poll waits
+            # - connection_pool_size=2 is sufficient for polling
+            get_updates_req = HTTPXRequest(
+                connect_timeout=20.0,
+                read_timeout=30.0,
+                pool_timeout=10.0,
+                connection_pool_size=2,
+            )
+            app_tg = (
+                ApplicationBuilder()
+                .token(Config.TELEGRAM_BOT_TOKEN)
+                .request(custom_request)
+                .get_updates_request(get_updates_req)
+                .build()
+            )
             app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
             app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+            # Register error handler to suppress "No error handlers are registered" warning
+            app_tg.add_error_handler(error_handler)
 
             # Use manual init/start instead of run_polling() to avoid
             # signal handler issues in daemon threads (Linux/Docker)
             await app_tg.initialize()
             await app_tg.start()
-            await app_tg.updater.start_polling(drop_pending_updates=True)
+            await app_tg.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message"],
+                poll_interval=1.0,
+                # python-telegram-bot's network_retry_loop handles transient
+                # errors (NetworkError, RemoteProtocolError, etc.) automatically
+                # via exponential backoff — no custom error_callback needed.
+            )
             logger.info("🤖 Telegram RFID bot started (polling)")
 
             # Keep running forever
@@ -331,10 +418,22 @@ def _start_telegram_bot():
                 await app_tg.stop()
                 await app_tg.shutdown()
 
-        # Run in event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_bot())
+        # Run with retry on failure (network blips, Telegram blocks, etc.)
+        retry_delay = 30
+        while True:
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(run_bot())
+                break  # Normal exit (shouldn't happen — run_bot loops forever)
+            except Exception as e:
+                logger.warning(f"Telegram bot crashed, retrying in {retry_delay}s: {e}")
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 600)  # Max 10 min backoff
 
     except ImportError:
         logger.warning("python-telegram-bot not installed — RFID bot disabled")
@@ -371,9 +470,18 @@ if __name__ == "__main__":
     # Start Deadline Watcher (polls mail.activity for deadline extensions)
     start_deadline_watcher()
 
-    # Start Flask
-    app.run(
-        host="0.0.0.0",
-        port=Config.FLASK_PORT,
-        debug=Config.FLASK_DEBUG,
-    )
+    # Start CRM Lost Watcher (cancels activities on lost leads)
+    start_crm_lost_watcher()
+
+    # Start Flask with a production-ready WSGI server
+    try:
+        from waitress import serve
+        logger.info(f"Starting waitress WSGI server on 0.0.0.0:{Config.FLASK_PORT}")
+        serve(app, host="0.0.0.0", port=Config.FLASK_PORT, threads=4)
+    except ImportError:
+        logger.warning("waitress not installed — falling back to Flask dev server")
+        app.run(
+            host="0.0.0.0",
+            port=Config.FLASK_PORT,
+            debug=Config.FLASK_DEBUG,
+        )

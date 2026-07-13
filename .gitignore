@@ -5,5 +5,5 @@ __pycache__/
 auto-workflow.log
 venv/
 .venv/
-data/*.json
-data/deadline_snapshot.json
+data/
+

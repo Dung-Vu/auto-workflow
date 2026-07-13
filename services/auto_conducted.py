@@ -34,8 +34,23 @@ TARGET_HOUR_UTC = 1
 TARGET_MINUTE_UTC = 0
 
 
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 5
+_RETRY_BACKOFF = 2
+_RETRYABLE_ERRORS = [
+    "429", "Too Many Requests", "Connection refused", "timed out",
+    "Read timed out", "IncompleteRead", "Bad Gateway", "502", "503",
+    "Connection reset", "No address associated", "Name or service not known",
+]
+
+
+def _is_retryable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(s.lower() in msg for s in _RETRYABLE_ERRORS)
+
+
 def _odoo_call(model: str, method: str, args: list = None, kwargs: dict = None):
-    """Execute Odoo JSON-RPC call using Conducted-specific credentials."""
+    """Execute Odoo JSON-RPC call using Conducted-specific credentials with retry logic."""
     payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -54,13 +69,28 @@ def _odoo_call(model: str, method: str, args: list = None, kwargs: dict = None):
         },
         "id": 1,
     }
-    r = requests.post(f"{Config.ODOO_URL}/jsonrpc", json=payload, timeout=30)
-    res = r.json()
-    if "error" in res:
-        raise Exception(
-            res["error"].get("data", {}).get("message", str(res["error"]))
-        )
-    return res.get("result")
+    last_exc = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            r = requests.post(f"{Config.ODOO_URL}/jsonrpc", json=payload, timeout=30)
+            res = r.json()
+            if "error" in res:
+                raise Exception(
+                    res["error"].get("data", {}).get("message", str(res["error"]))
+                )
+            return res.get("result")
+        except Exception as e:
+            last_exc = e
+            if attempt < _MAX_RETRIES and _is_retryable(e):
+                delay = _RETRY_BASE_DELAY * (_RETRY_BACKOFF ** attempt)
+                logger.warning(
+                    f"[CONDUCTED] Odoo call {model}.{method} failed "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}): {e} — retrying in {delay}s"
+                )
+                time.sleep(delay)
+            else:
+                raise
+    raise last_exc
 
 
 def run_auto_conducted(dry_run: bool = False) -> dict:

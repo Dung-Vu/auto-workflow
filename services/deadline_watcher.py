@@ -114,8 +114,23 @@ def _note_hash(note: str) -> str:
 #  ODOO JSON-RPC
 # ═══════════════════════════════════════════
 
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 5
+_RETRY_BACKOFF = 2
+_RETRYABLE_ERRORS = [
+    "429", "Too Many Requests", "Connection refused", "timed out",
+    "Read timed out", "IncompleteRead", "Bad Gateway", "502", "503",
+    "Connection reset", "No address associated", "Name or service not known",
+]
+
+
+def _is_retryable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(s.lower() in msg for s in _RETRYABLE_ERRORS)
+
+
 def _odoo_call(model: str, method: str, args: list = None, kwargs: dict = None):
-    """Execute Odoo JSON-RPC call."""
+    """Execute Odoo JSON-RPC call with retry + exponential backoff."""
     payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -132,11 +147,26 @@ def _odoo_call(model: str, method: str, args: list = None, kwargs: dict = None):
         },
         "id": 1,
     }
-    r = requests.post(f"{_WATCHER_ODOO_URL}/jsonrpc", json=payload, timeout=30)
-    res = r.json()
-    if "error" in res:
-        raise Exception(res["error"].get("data", {}).get("message", str(res["error"])))
-    return res.get("result")
+    last_exc = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            r = requests.post(f"{_WATCHER_ODOO_URL}/jsonrpc", json=payload, timeout=30)
+            res = r.json()
+            if "error" in res:
+                raise Exception(res["error"].get("data", {}).get("message", str(res["error"])))
+            return res.get("result")
+        except Exception as e:
+            last_exc = e
+            if attempt < _MAX_RETRIES and _is_retryable(e):
+                delay = _RETRY_BASE_DELAY * (_RETRY_BACKOFF ** attempt)
+                logger.warning(
+                    f"[DEADLINE] Odoo call {model}.{method} failed "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}): {e} — retrying in {delay}s"
+                )
+                time.sleep(delay)
+            else:
+                raise
+    raise last_exc
 
 
 def _fresh_read_note(act_id: int) -> str:
@@ -201,7 +231,8 @@ def _append_to_note(act_id: int, items: list[dict]) -> str | None:
         items: list of {"key": str, "html": str} dicts
 
     Returns:
-        The new note content after write, or None if nothing changed / error.
+        The note content as Odoo actually stored it (re-read after write),
+        or None if nothing changed / error.
     """
     note = _fresh_read_note(act_id)
     to_add = [it for it in items if it["key"] not in note]
@@ -215,7 +246,12 @@ def _append_to_note(act_id: int, items: list[dict]) -> str | None:
     if _write_note(act_id, new_note):
         labels = [it["key"] for it in to_add]
         logger.info(f"[DEADLINE] Appended to #{act_id}: {labels}")
-        return new_note
+        # Re-read what Odoo actually stored — Odoo may normalize HTML
+        # (add wrappers, convert newlines to <br>, etc.).
+        # Using the bot-constructed string would cause hash drift:
+        # stored hash ≠ next poll's hash → false "edit" detection.
+        stored_note = _fresh_read_note(act_id)
+        return stored_note
     return None
 
 
@@ -296,18 +332,30 @@ def _poll_and_check(snapshot: dict) -> dict:
         current_hash = _note_hash(current_note)
         old_hash = entry.get("note_hash")
 
+        # Determine who last wrote to this activity
+        wu = act.get("write_uid")
+        writer_uid = wu[0] if isinstance(wu, (list, tuple)) else wu
+        is_bot_write = (writer_uid == _WATCHER_ODOO_UID)
+
         if not did_restore and old_hash is not None and old_hash != current_hash:
-            # Note changed by user (not by us) → log the edit
-            user_name = _get_user_name(act)
-            edit_log = _build_edit_log(user_name)
-            result = _append_to_note(act["id"], [edit_log])
-            if result is not None:
-                current_note = result
-                current_hash = _note_hash(current_note)
-            entry.setdefault("edit_logs", []).append(edit_log)
-            poll_edits += 1
-            _edit_count += 1
-            logger.info(f"[DEADLINE] Note edited on #{act['id']} by {user_name}")
+            if is_bot_write:
+                # Hash changed but last writer was our bot (e.g. Odoo HTML
+                # normalization after our write). Skip — not a genuine user edit.
+                logger.debug(
+                    f"[DEADLINE] Hash drift on #{act['id']} (bot write) — updating hash"
+                )
+            else:
+                # Note changed by a real user → log the edit
+                user_name = _get_user_name(act)
+                edit_log = _build_edit_log(user_name)
+                result = _append_to_note(act["id"], [edit_log])
+                if result is not None:
+                    current_note = result
+                    current_hash = _note_hash(current_note)
+                entry.setdefault("edit_logs", []).append(edit_log)
+                poll_edits += 1
+                _edit_count += 1
+                logger.info(f"[DEADLINE] Note edited on #{act['id']} by {user_name}")
 
         # ─── Step 4: Deadline extension ───
         if new_date != old_date:
@@ -389,15 +437,33 @@ def _watcher_loop():
         except Exception as e:
             logger.error(f"[DEADLINE] Seed failed: {e}")
 
+    consecutive_errors = 0
+    max_backoff = max(interval * 5, 600)
+
     while _watcher_running:
         try:
             snapshot = _poll_and_check(snapshot)
             _save_snapshot(snapshot)
+            consecutive_errors = 0
         except Exception as e:
-            logger.error(f"[DEADLINE] Poll error: {e}")
+            consecutive_errors += 1
+            err_str = str(e)
+            is_rate_limited = "429" in err_str or "Too Many Requests" in err_str
+            if is_rate_limited:
+                backoff = min(max_backoff, max(90, 45 * (2 ** min(consecutive_errors, 4))))
+            else:
+                backoff = min(max_backoff, 10 * (2 ** min(consecutive_errors, 5)))
+            # Add jitter to prevent thundering herd with other pollers
+            backoff += __import__('random').uniform(0, max(1, backoff * 0.2))
+            log_level = logging.WARNING if is_rate_limited else logging.ERROR
+            logger.log(
+                log_level,
+                f"[DEADLINE] Poll error (#{consecutive_errors}): {e} — retrying in {backoff:.0f}s"
+            )
 
-        # Interruptible sleep
-        deadline = time.monotonic() + interval
+        # Interruptible sleep with jitter
+        jitter = __import__('random').uniform(0, min(15, interval * 0.25))
+        deadline = time.monotonic() + interval + jitter
         while time.monotonic() < deadline and _watcher_running:
             time.sleep(min(5, max(0, deadline - time.monotonic())))
 

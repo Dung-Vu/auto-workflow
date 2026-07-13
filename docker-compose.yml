@@ -1,5 +1,6 @@
 services:
   app:
+    build: .
     image: auto-workflow:latest
     container_name: auto-workflow
     restart: unless-stopped

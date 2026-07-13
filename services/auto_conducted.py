@@ -90,6 +90,8 @@ def _odoo_call(model: str, method: str, args: list = None, kwargs: dict = None):
                 time.sleep(delay)
             else:
                 raise
+    if last_exc is None:
+        raise RuntimeError("Retry loop completed without exception")
     raise last_exc
 
 

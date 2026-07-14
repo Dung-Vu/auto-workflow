@@ -77,6 +77,11 @@ class Config:
     OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
     OP_DELIVERY_DATE_POLL_INTERVAL = int(os.getenv("OP_DELIVERY_DATE_POLL_INTERVAL", "60"))  # seconds
 
+    # Odoo — Approval Document Number (webhook, replaces base.automation ID 36)
+    APPROVAL_DOC_NUMBER_ENABLED = os.getenv("APPROVAL_DOC_NUMBER_ENABLED", "true").lower() == "true"
+    APPROVAL_DOC_SEQUENCE_CODE = os.getenv("APPROVAL_DOC_SEQUENCE_CODE", "approval.banhanh")
+    APPROVAL_DOC_FALLBACK_NUM = os.getenv("APPROVAL_DOC_FALLBACK_NUM", "00000")
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")

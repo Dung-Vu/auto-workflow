@@ -72,6 +72,7 @@ from services.section3_timeline import start_section3_timeline_scheduler, get_se
 from services.section5_2 import start_section5_2_scheduler, get_section5_2_status
 from services.commission_revenue import start_commission_revenue_watcher, get_commission_revenue_status
 from services.op_delivery_date import start_op_delivery_date_watcher, get_op_delivery_date_status
+from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status
 
 app = Flask(__name__)
 
@@ -99,6 +100,7 @@ def health():
         "section5_2": get_section5_2_status(),
         "commission_revenue": get_commission_revenue_status(),
         "op_delivery_date": get_op_delivery_date_status(),
+        "approval_doc_number": get_approval_doc_number_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -285,6 +287,38 @@ def manual_conducted():
         return jsonify(result), 200
     except Exception as e:
         logger.exception("Error in manual_conducted")
+        return jsonify({"error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════
+#  APPROVAL DOCUMENT NUMBER (replaces Odoo automation 36)
+# ═══════════════════════════════════════════
+
+@app.route("/webhook/approval-doc-number", methods=["POST"])
+def approval_doc_number():
+    """
+    Webhook endpoint for approval.request document number generation.
+    Odoo server action calls this on_save when date_confirmed=False.
+
+    Payload: {"id": <approval_request_id>}
+    Returns: {"action": "assigned"/"skipped", "doc_number": "..."}
+    """
+    if not Config.APPROVAL_DOC_NUMBER_ENABLED:
+        return jsonify({"status": "disabled"}), 200
+
+    try:
+        data = request.get_json(force=True)
+        approval_id = data.get("id") or data.get("_id")
+
+        if not approval_id:
+            return jsonify({"error": "Missing 'id' in payload"}), 400
+
+        approval_id = int(approval_id)
+        result = generate_doc_number(approval_id)
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.exception("Error in approval_doc_number webhook")
         return jsonify({"error": str(e)}), 500
 
 

@@ -72,7 +72,7 @@ from services.section3_timeline import start_section3_timeline_scheduler, get_se
 from services.section5_2 import start_section5_2_scheduler, get_section5_2_status
 from services.commission_revenue import start_commission_revenue_watcher, get_commission_revenue_status
 from services.op_delivery_date import start_op_delivery_date_watcher, get_op_delivery_date_status
-from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status
+from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status, start_approval_doc_number_poller
 
 app = Flask(__name__)
 
@@ -551,6 +551,9 @@ if __name__ == "__main__":
 
     # Start OP Delivery Date watcher (syncs SO delivery date to picking scheduled_date)
     start_op_delivery_date_watcher()
+
+    # Start Approval Doc Number poller (fallback for webhook — catches missed records)
+    start_approval_doc_number_poller()
 
     # Start Flask with a production-ready WSGI server
     try:

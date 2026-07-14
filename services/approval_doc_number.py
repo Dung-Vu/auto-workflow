@@ -21,6 +21,7 @@ Odoo server action 1922 should be replaced with:
 
 import json
 import logging
+import os
 from datetime import datetime
 
 from config import Config
@@ -167,4 +168,91 @@ def get_approval_doc_number_status() -> dict:
         "total_skipped_has_number": _total_skipped_has_number,
         "total_errors": _total_errors,
         "last_result": _last_result,
+        "poller_active": _poller_running,
     }
+
+
+# ═══════════════════════════════════════════
+#  POLLING FALLBACK (catches records webhook misses)
+# ═══════════════════════════════════════════
+
+import threading
+import time as _time
+
+_poller_running = False
+_poller_last_run = None
+_poller_total_runs = 0
+_poller_total_assigned = 0
+
+POLL_INTERVAL = int(os.getenv("APPROVAL_DOC_POLL_INTERVAL", "30"))
+
+
+def _poll_missing_doc_numbers():
+    """Poll approval.request records missing document numbers and assign them."""
+    global _poller_total_assigned
+
+    # Find unconfirmed approval.request without doc number
+    rec_ids = odoo.search("approval.request", [
+        ["date_confirmed", "=", False],
+        ["x_studio_documents_number", "=", False],
+    ], limit=50)
+
+    if not rec_ids:
+        return 0
+
+    logger.info(f"[DOC-NUM] Poller: {len(rec_ids)} approval(s) missing doc number")
+
+    assigned = 0
+    for rec_id in rec_ids:
+        try:
+            result = generate_doc_number(rec_id)
+            if result.get("action") == "assigned":
+                assigned += 1
+        except Exception as e:
+            logger.error(f"[DOC-NUM] Poller: error on approval {rec_id}: {e}")
+            _total_errors += 1
+
+    _poller_total_assigned += assigned
+    return assigned
+
+
+def _poller_loop():
+    """Background loop: poll every POLL_INTERVAL seconds for missing doc numbers."""
+    global _poller_running, _poller_last_run, _poller_total_runs
+    _poller_running = True
+
+    interval = POLL_INTERVAL
+    logger.info(f"[DOC-NUM] Poller starting — interval: {interval}s (fallback for webhook)")
+
+    _time.sleep(20)  # Let server finish starting
+
+    while _poller_running:
+        _poller_total_runs += 1
+        try:
+            count = _poll_missing_doc_numbers()
+            _poller_last_run = datetime.now().isoformat()
+            if count:
+                logger.info(f"[DOC-NUM] Poller run #{_poller_total_runs}: assigned {count} doc number(s)")
+        except Exception as e:
+            logger.error(f"[DOC-NUM] Poller error: {e}")
+
+        # Interruptible sleep
+        deadline = _time.monotonic() + interval
+        while _time.monotonic() < deadline and _poller_running:
+            _time.sleep(min(5, max(0, deadline - _time.monotonic())))
+
+
+def start_approval_doc_number_poller():
+    """Start the polling fallback for approval doc numbers."""
+    if not Config.APPROVAL_DOC_NUMBER_ENABLED:
+        logger.warning("[DOC-NUM] APPROVAL_DOC_NUMBER_ENABLED not true — poller disabled")
+        return
+    if not Config.ODOO_UID and not Config.ODOO_USER:
+        logger.warning("[DOC-NUM] Odoo credentials not set — poller disabled")
+        return
+
+    thread = threading.Thread(
+        target=_poller_loop, daemon=True, name="approval-doc-poller"
+    )
+    thread.start()
+    logger.info(f"[DOC-NUM] Poller started — every {POLL_INTERVAL}s (fallback for webhook)")

@@ -38,7 +38,7 @@ class Config:
     DASHBOARD_259_APPROVAL_TYPE_ID = int(os.getenv("DASHBOARD_259_APPROVAL_TYPE_ID", "13"))
     DASHBOARD_259_ENABLED = os.getenv("DASHBOARD_259_ENABLED", "true").lower() == "true"
     # Separate UID for approval queries (original script used UID 145)
-    DASHBOARD_259_ODOO_UID = int(os.getenv("DASHBOARD_259_ODOO_UID", "0")) or None
+    DASHBOARD_259_ODOO_UID = int(os.getenv("DASHBOARD_259_ODOO_UID") or "0") or None
     DASHBOARD_259_ODOO_API_KEY = os.getenv("DASHBOARD_259_ODOO_API_KEY", "")
 
     # Odoo — KHO MAU CTL Overdue (daily 11:00 ICT / 04:00 UTC)

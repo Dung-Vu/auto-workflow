@@ -295,7 +295,7 @@ def start_commission_revenue_watcher():
         logger.warning("[COMMISSION] COMMISSION_REVENUE_ENABLED not true — "
                        "watcher disabled")
         return
-    if not _ODOO_UID and not Config.ODOO_USER:
+    if not _ODDO_UID and not Config.ODOO_USER:
         logger.warning("[COMMISSION] Odoo credentials not set — watcher disabled")
         return
 

@@ -262,7 +262,7 @@ def start_op_delivery_date_watcher():
         logger.warning("[OP-DELIVERY] OP_DELIVERY_DATE_ENABLED not true — "
                        "watcher disabled")
         return
-    if not _ODOO_UID and not Config.ODOO_USER:
+    if not _ODDO_UID and not Config.ODOO_USER:
         logger.warning("[OP-DELIVERY] Odoo credentials not set — watcher disabled")
         return
 

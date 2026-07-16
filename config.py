@@ -82,6 +82,22 @@ class Config:
     APPROVAL_DOC_SEQUENCE_CODE = os.getenv("APPROVAL_DOC_SEQUENCE_CODE", "approval.banhanh")
     APPROVAL_DOC_FALLBACK_NUM = os.getenv("APPROVAL_DOC_FALLBACK_NUM", "00000")
 
+    # Odoo — Follow Activity on Order State Change (polling, new automation)
+    FOLLOW_ACTIVITY_ENABLED = os.getenv("FOLLOW_ACTIVITY_ENABLED", "true").lower() == "true"
+    FOLLOW_ACTIVITY_POLL_INTERVAL = int(os.getenv("FOLLOW_ACTIVITY_POLL_INTERVAL", "30"))  # seconds
+    FOLLOW_ACTIVITY_TRIGGER_VALUES = [
+        v.strip() for v in os.getenv(
+            "FOLLOW_ACTIVITY_TRIGGER_VALUES", "Hàng về/Chờ thi công"
+        ).split(",") if v.strip()
+    ]
+    FOLLOW_ACTIVITY_TYPE_ID = int(os.getenv("FOLLOW_ACTIVITY_TYPE_ID", "72"))
+    FOLLOW_ACTIVITY_FIXED_USER_IDS = [
+        int(x) for x in os.getenv(
+            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "218,237,253"
+        ).split(",") if x.strip()
+    ]
+    FOLLOW_ACTIVITY_DEADLINE_DAYS = int(os.getenv("FOLLOW_ACTIVITY_DEADLINE_DAYS", "2"))
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
     CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")

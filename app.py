@@ -73,6 +73,7 @@ from services.section5_2 import start_section5_2_scheduler, get_section5_2_statu
 from services.commission_revenue import start_commission_revenue_watcher, get_commission_revenue_status
 from services.op_delivery_date import start_op_delivery_date_watcher, get_op_delivery_date_status
 from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status, start_approval_doc_number_poller
+from services.follow_activity import start_follow_activity_watcher, get_follow_activity_status
 
 app = Flask(__name__)
 
@@ -101,6 +102,7 @@ def health():
         "commission_revenue": get_commission_revenue_status(),
         "op_delivery_date": get_op_delivery_date_status(),
         "approval_doc_number": get_approval_doc_number_status(),
+        "follow_activity": get_follow_activity_status(),
         "routes": [
             "/webhook/shopify/customer-create",
             "/webhook/fsm",
@@ -554,6 +556,9 @@ if __name__ == "__main__":
 
     # Start Approval Doc Number poller (fallback for webhook — catches missed records)
     start_approval_doc_number_poller()
+
+    # Start Follow Activity watcher (creates activities on order state change)
+    start_follow_activity_watcher()
 
     # Start Flask with a production-ready WSGI server
     try:

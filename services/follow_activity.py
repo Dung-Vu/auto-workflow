@@ -121,10 +121,7 @@ def _create_follow_activity(so: dict, user_id: int, user_name: str) -> int:
         f"<li>SO: <strong>{so_name}</strong></li>"
         f"<li>Customer: {partner_name}</li>"
         f"<li>Order State: <strong>{order_state}</strong></li>"
-        f"<li>Assigned to: {user_name}</li>"
         f"</ul>"
-        f"<p><em>Auto-created by follow_activity polling service when "
-        f"Order State changed to '{order_state}'.</em></p>"
     )
 
     deadline = (date.today() + timedelta(days=_DEADLINE_DAYS)).isoformat()

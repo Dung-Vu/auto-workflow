@@ -13,13 +13,13 @@ class Config:
     """Application configuration from environment variables."""
 
     # Flask
-    FLASK_PORT = int(os.getenv("FLASK_PORT", "5050"))
+    FLASK_PORT = int(os.getenv("FLASK_PORT") or "5050")
     FLASK_DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
     # Odoo
     ODOO_URL = os.getenv("ODOO_URL", "")
     ODOO_DB = os.getenv("ODOO_DB", "")
-    ODOO_UID = int(os.getenv("ODOO_UID", "0")) or None  # Direct UID (preferred)
+    ODOO_UID = int(os.getenv("ODOO_UID") or "0") or None  # Direct UID (preferred)
     ODOO_API_KEY = os.getenv("ODOO_API_KEY", "")
     ODOO_USER = os.getenv("ODOO_USER", "")  # Optional: only needed if ODOO_UID not set
 
@@ -72,6 +72,16 @@ class Config:
             "COMMISSION_REVENUE_EXCLUDED_CATEGORIES", "19,998,999,1097"
         ).split(",") if x.strip()
     ]
+    # Product name prefixes (pipe-separated) excluded from commission base.
+    # Matches if display_name STARTS WITH any of these strings.
+    # Use this for products inside a shared category that should be excluded
+    # individually (e.g. MOTOR construction-fee variants that share category
+    # with revenue-counting MOTOR products).
+    COMMISSION_REVENUE_EXCLUDED_NAME_PREFIXES = [
+        x.strip() for x in os.getenv(
+            "COMMISSION_REVENUE_EXCLUDED_NAME_PREFIXES", ""
+        ).split("|") if x.strip()
+    ]
 
     # Odoo — OP Delivery Date Sync (polling, replaces base.automation ID 80)
     OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
@@ -93,13 +103,62 @@ class Config:
     FOLLOW_ACTIVITY_TYPE_ID = int(os.getenv("FOLLOW_ACTIVITY_TYPE_ID", "72"))
     FOLLOW_ACTIVITY_FIXED_USER_IDS = [
         int(x) for x in os.getenv(
-            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "218,237,253"
+            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "237,253"
         ).split(",") if x.strip()
     ]
+    FOLLOW_ACTIVITY_COMPANY_USER_IDS = {
+        int(company_id.strip()): int(user_id.strip())
+        for entry in os.getenv(
+            "FOLLOW_ACTIVITY_COMPANY_USER_IDS", "1:218,11:9"
+        ).split(",") if entry.strip()
+        for company_id, user_id in [entry.split(":", 1)]
+    }
     FOLLOW_ACTIVITY_DEADLINE_DAYS = int(os.getenv("FOLLOW_ACTIVITY_DEADLINE_DAYS", "2"))
 
+    # Odoo — Return Activity (poll stock.picking returns → activity on return slip)
+    RETURN_ACTIVITY_ENABLED = os.getenv("RETURN_ACTIVITY_ENABLED", "true").lower() == "true"
+    RETURN_ACTIVITY_POLL_INTERVAL = int(os.getenv("RETURN_ACTIVITY_POLL_INTERVAL", "5"))  # seconds
+    # BON SC: TRẦN THIỆN NHÂN (295), NGUYỄN THỊ HẰNG (293)
+    RETURN_ACTIVITY_USER_IDS = [
+        int(x.strip()) for x in os.getenv("RETURN_ACTIVITY_USER_IDS", "295,293").split(",")
+        if x.strip().isdigit()
+    ]
+    RETURN_ACTIVITY_SUMMARY = os.getenv("RETURN_ACTIVITY_SUMMARY", "Return mới cần xem")
+    RETURN_ACTIVITY_TYPE_ID = int(os.getenv("RETURN_ACTIVITY_TYPE_ID", "4"))  # To-Do
+    RETURN_ACTIVITY_DEADLINE_DAYS = int(os.getenv("RETURN_ACTIVITY_DEADLINE_DAYS", "0"))
+    # incoming = return of delivery; internal = return of internal/CTL transfers
+    RETURN_ACTIVITY_PICKING_CODES = [
+        c.strip()
+        for c in os.getenv("RETURN_ACTIVITY_PICKING_CODES", "incoming,internal").split(",")
+        if c.strip()
+    ]
+
+    # Odoo — Test Server (testing0808.odoo.com)
+    # Used by Lot/Serial automation and any future test-only modules.
+    ODOO_TEST_URL = os.getenv("ODOO_TEST_URL", "")
+    ODOO_TEST_DB = os.getenv("ODOO_TEST_DB", "")
+    ODOO_TEST_UID = int(os.getenv("ODOO_TEST_UID") or "0") or None
+    ODOO_TEST_API_KEY = os.getenv("ODOO_TEST_API_KEY", "")
+
+    # Lot/Serial — warehouse whitelist for serial rename operations
+    LOT_SERIAL_WHITELIST_WAREHOUSES = [
+        w.strip() for w in os.getenv(
+            "LOT_SERIAL_WHITELIST_WAREHOUSES", "ORDST,ORDAP"
+        ).split(",") if w.strip()
+    ]
+    LOT_SERIAL_SOURCE_WAREHOUSES = [
+        w.strip() for w in os.getenv(
+            "LOT_SERIAL_SOURCE_WAREHOUSES", "MID"
+        ).split(",") if w.strip()
+    ]
+    LOT_SERIAL_ENABLED = os.getenv("LOT_SERIAL_ENABLED", "false").lower() == "true"
+    LOT_SERIAL_API_TOKEN = os.getenv("LOT_SERIAL_API_TOKEN", "")
+    LOT_SERIAL_ALLOW_SCHEMA_SETUP = os.getenv(
+        "LOT_SERIAL_ALLOW_SCHEMA_SETUP", "false"
+    ).lower() == "true"
+
     # Odoo — Auto-Conducted (separate UID/key for meeting tick automation)
-    CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID", "0")) or None
+    CONDUCTED_ODOO_UID = int(os.getenv("CONDUCTED_ODOO_UID") or "0") or None
     CONDUCTED_ODOO_API_KEY = os.getenv("CONDUCTED_ODOO_API_KEY", "")
 
     # Shopify — Ordinaire

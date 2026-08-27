@@ -12,6 +12,7 @@ its last run + result for status inspection. Converted from
 """
 
 import json
+import os
 import logging
 import threading
 import time
@@ -47,10 +48,47 @@ ACTIVITY_TYPE_NAME = Config.CTL_ACTIVITY_TYPE_NAME
 LENDING_MIN_DATE = Config.CTL_LENDING_MIN_DATE
 
 # ---------------------------------------------------------------------------
+# Persistent state file — tracks which milestones have been fired per picking.
+# Lives in DATA_DIR (Docker named volume) so it survives rebuild/restart.
+# Format: {"picking_id_str": [30, 60], ...}
+# ---------------------------------------------------------------------------
+STATE_FILE = os.path.join(
+    os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data")),
+    "ctl_milestone_fired.json",
+)
+
+# ---------------------------------------------------------------------------
 # Lookup caches
 # ---------------------------------------------------------------------------
 _stock_picking_model_id = None
 _activity_type_id = None
+
+
+
+def _load_state() -> dict:
+    """Load fired milestones from disk.
+
+    Returns ``{picking_id_str: [milestone_int, ...]}``.
+    """
+    if not os.path.exists(STATE_FILE):
+        logger.info("[CTL] No state file — starting fresh")
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("[CTL] Failed to load state: %s — starting fresh", e)
+        return {}
+
+
+def _save_state(state: dict):
+    """Persist fired milestones to disk."""
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error("[CTL] Failed to save state: %s", e)
 
 
 def _parse_date(val):
@@ -204,12 +242,21 @@ def create_activity(picking, milestone, dry_run=False):
 
 
 def run_ctl_overdue_check(dry_run=False):
-    """Scan CTL return pickings and fire the highest overdue milestone activity."""
+    """Scan CTL return pickings and fire the highest overdue milestone activity.
+
+    Uses a persistent state file to track which milestones have already been
+    fired for each picking.  This prevents daily spam — each milestone (D30,
+    D60, D90) is only notified **once** per picking, regardless of whether the
+    Odoo activity was marked done or deleted.
+    """
     global _last_run, _last_result
 
     logger.info("[CTL] run_ctl_overdue_check start (dry_run=%s)", dry_run)
     _ensure_lookups()
     pickings = fetch_return_pickings()
+
+    # Load persistent state
+    state = _load_state()
 
     result = {
         "ran_at": datetime.now(timezone.utc).isoformat(),
@@ -226,8 +273,23 @@ def run_ctl_overdue_check(dry_run=False):
         logger.info("[CTL] No CTL return pickings found — nothing to do")
         return result
 
+    # Also query Odoo active activities for backward-compat seeding:
+    # if an activity already exists on Odoo but is NOT yet in our state file
+    # (e.g. first run after upgrade), we seed the state so we don't duplicate.
     picking_ids = [p["id"] for p in pickings]
-    existing = existing_milestone_activities(picking_ids)
+    odoo_existing = existing_milestone_activities(picking_ids)
+
+    # Seed state from Odoo active activities (one-time migration)
+    state_dirty = False
+    for pid, milestones in odoo_existing.items():
+        pid_str = str(pid)
+        if pid_str not in state:
+            state[pid_str] = []
+        for m in milestones:
+            if m not in state[pid_str]:
+                state[pid_str].append(m)
+                state_dirty = True
+                logger.info("[CTL] Seeded state from Odoo: picking %s milestone D%d", pid_str, m)
 
     for picking in pickings:
         lending_date = picking.get("x_studio_lending_date")
@@ -240,12 +302,34 @@ def run_ctl_overdue_check(dry_run=False):
         if highest_due is None:
             result["skipped_gap"] += 1
             continue
-        if highest_due in existing.get(picking["id"], set()):
+
+        pid_str = str(picking["id"])
+        fired = state.get(pid_str, [])
+
+        if highest_due in fired:
             result["skipped_existing"] += 1
             continue
+
         new_id = create_activity(picking, highest_due, dry_run=dry_run)
-        if new_id:
+        if new_id or dry_run:
+            # Record milestone in persistent state
+            if pid_str not in state:
+                state[pid_str] = []
+            state[pid_str].append(highest_due)
+            state_dirty = True
             result["created"] += 1
+
+    # Cleanup: remove picking IDs that are no longer in the active set
+    active_pid_strs = {str(p["id"]) for p in pickings}
+    stale_keys = [k for k in state if k not in active_pid_strs]
+    for k in stale_keys:
+        del state[k]
+        state_dirty = True
+        logger.info("[CTL] Cleaned up completed picking %s from state", k)
+
+    if state_dirty and not dry_run:
+        _save_state(state)
+        logger.info("[CTL] State saved — tracking %d pickings", len(state))
 
     _last_run = result["ran_at"]
     _last_result = result
@@ -308,9 +392,12 @@ def start_ctl_scheduler():
 
 def get_ctl_status():
     """Return a snapshot of the scheduler state for inspection."""
+    state = _load_state()
     return {
         "scheduler_active": _scheduler_running,
         "target_time": f"{TARGET_HOUR_UTC:02d}:{TARGET_MINUTE_UTC:02d} UTC (11:00 ICT)",
         "last_run": _last_run,
         "last_result_summary": _last_result,
+        "tracked_pickings": len(state),
+        "state_file": STATE_FILE,
     }

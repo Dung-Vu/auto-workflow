@@ -137,6 +137,14 @@ class OdooClient:
         """Update records in Odoo."""
         return self._execute_with_retry(model, "write", [record_ids, values], {})
 
+    def unlink(self, model: str, record_ids: list) -> bool:
+        """Delete records created by a failed, compensating workflow."""
+        return self._execute_with_retry(model, "unlink", [record_ids], {})
+
+    def fields_get(self, model: str) -> dict:
+        """Return field metadata for a model."""
+        return self._execute_with_retry(model, "fields_get", [], {})
+
     def search(self, model: str, domain: list, limit: int = 0) -> list:
         """Search for record IDs."""
         kwargs = {}

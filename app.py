@@ -21,6 +21,8 @@ import os
 import sys
 import logging
 import threading
+import hmac
+from functools import wraps
 from datetime import datetime
 
 from flask import Flask, request, jsonify
@@ -74,6 +76,8 @@ from services.commission_revenue import start_commission_revenue_watcher, get_co
 from services.op_delivery_date import start_op_delivery_date_watcher, get_op_delivery_date_status
 from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status, start_approval_doc_number_poller
 from services.follow_activity import start_follow_activity_watcher, get_follow_activity_status
+from services.return_activity import start_return_activity_watcher, get_return_activity_status
+
 
 app = Flask(__name__)
 
@@ -84,6 +88,15 @@ app = Flask(__name__)
 
 @app.route("/health", methods=["GET"])
 def health():
+    # Lot/Serial status (lazy — only if test server configured)
+    lot_serial_status = {"configured": bool(Config.ODOO_TEST_URL)}
+    if Config.ODOO_TEST_URL:
+        try:
+            from services.lot_serial import LotSerialService
+            lot_serial_status = LotSerialService().get_status()
+        except Exception as e:
+            lot_serial_status["error"] = str(e)
+
     return jsonify({
         "status": "ok",
         "service": "auto-workflow",
@@ -103,8 +116,11 @@ def health():
         "op_delivery_date": get_op_delivery_date_status(),
         "approval_doc_number": get_approval_doc_number_status(),
         "follow_activity": get_follow_activity_status(),
+        "return_activity": get_return_activity_status(),
+        "lot_serial": lot_serial_status,
         "routes": [
             "/webhook/shopify/customer-create",
+            "/webhook/shopify-bonario/customer-create",
             "/webhook/fsm",
             "/webhook/hdsd-eng",
             "/webhook/hdsd-vie",
@@ -113,6 +129,15 @@ def health():
             "/webhook/rating",
             "/webhook/zns-done",
             "/webhook/conducted",
+            "/webhook/approval-doc-number",
+            "/lot-serial/receipt/preview",
+            "/lot-serial/receipt/apply",
+            "/lot-serial/mo/preview",
+            "/lot-serial/mo/apply",
+            "/lot-serial/rename/preview",
+            "/lot-serial/rename/apply",
+            "/lot-serial/setup",
+            "/lot-serial/status",
         ],
     })
 
@@ -321,6 +346,194 @@ def approval_doc_number():
 
     except Exception as e:
         logger.exception("Error in approval_doc_number webhook")
+        return jsonify({"error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════
+#  LOT/SERIAL AUTOMATION (Test Server Only)
+# ═══════════════════════════════════════════
+
+def lot_serial_access_required(view):
+    """Disable the module by default and require a dedicated API token."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not Config.LOT_SERIAL_ENABLED:
+            return jsonify({"error": "Lot/serial automation is disabled"}), 503
+        token = Config.LOT_SERIAL_API_TOKEN
+        supplied = request.headers.get("X-Lot-Serial-Token", "")
+        if not token or not hmac.compare_digest(supplied, token):
+            return jsonify({"error": "Invalid lot/serial API token"}), 401
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/lot-serial/status", methods=["GET"])
+@lot_serial_access_required
+def lot_serial_status():
+    """Health check for lot/serial module."""
+    try:
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        return jsonify(svc.get_status()), 200
+    except Exception as e:
+        logger.exception("Error in lot_serial_status")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/setup", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_setup():
+    """Explicitly initialize the two audit/provenance fields on Odoo test."""
+    try:
+        data = request.get_json(force=True)
+        if data.get("confirm") is not True:
+            return jsonify({"error": "Send {\"confirm\": true} to initialize test fields"}), 400
+        from services.lot_serial import LotSerialService
+        from services.lot_serial.workflow_fields import ensure_workflow_fields
+        return jsonify(ensure_workflow_fields(LotSerialService().odoo)), 200
+    except Exception as e:
+        logger.exception("Error in lot_serial_setup")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/receipt/preview", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_receipt_preview():
+    """Preview serial assignments for a receipt picking.
+    Body: {"picking_id": 123}
+    """
+    try:
+        data = request.get_json(force=True)
+        picking_id = data.get("picking_id")
+        if not picking_id:
+            return jsonify({"error": "Missing 'picking_id' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.preview_receipt_serial(int(picking_id))
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_receipt_preview")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/receipt/apply", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_receipt_apply():
+    """Create and assign serials for a receipt picking.
+    Body: {"picking_id": 123}
+    """
+    try:
+        data = request.get_json(force=True)
+        picking_id = data.get("picking_id")
+        plan_hash = data.get("plan_hash")
+        if not picking_id:
+            return jsonify({"error": "Missing 'picking_id' in payload"}), 400
+        if not plan_hash:
+            return jsonify({"error": "Missing Preview 'plan_hash' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.apply_receipt_serial(int(picking_id), plan_hash)
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_receipt_apply")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/mo/preview", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_mo_preview():
+    """Preview serial assignments for an MO's finished product.
+    Body: {"production_id": 456}
+    """
+    try:
+        data = request.get_json(force=True)
+        production_id = data.get("production_id")
+        if not production_id:
+            return jsonify({"error": "Missing 'production_id' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.preview_mo_serial(int(production_id))
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_mo_preview")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/mo/apply", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_mo_apply():
+    """Create and assign serials for an MO's finished product.
+    Body: {"production_id": 456}
+    """
+    try:
+        data = request.get_json(force=True)
+        production_id = data.get("production_id")
+        plan_hash = data.get("plan_hash")
+        if not production_id:
+            return jsonify({"error": "Missing 'production_id' in payload"}), 400
+        if not plan_hash:
+            return jsonify({"error": "Missing Preview 'plan_hash' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.apply_mo_serial(int(production_id), plan_hash)
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_mo_apply")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/rename/preview", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_rename_preview():
+    """Preview serial renames (temp → real) for a completed picking.
+    Body: {"picking_id": 789, "rename_map": {"OLD-SERIAL": "NEW-SERIAL"}}
+    """
+    try:
+        data = request.get_json(force=True)
+        picking_id = data.get("picking_id")
+        rename_map = data.get("rename_map", {})
+        if not picking_id:
+            return jsonify({"error": "Missing 'picking_id' in payload"}), 400
+        if not rename_map:
+            return jsonify({"error": "Missing 'rename_map' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.preview_rename_serial(int(picking_id), rename_map)
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_rename_preview")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/lot-serial/rename/apply", methods=["POST"])
+@lot_serial_access_required
+def lot_serial_rename_apply():
+    """Apply serial renames (temp → real) with audit trail.
+    Body: {"picking_id": 789, "rename_map": {"OLD-SERIAL": "NEW-SERIAL"}}
+    """
+    try:
+        data = request.get_json(force=True)
+        picking_id = data.get("picking_id")
+        rename_map = data.get("rename_map", {})
+        plan_hash = data.get("plan_hash")
+        if not picking_id:
+            return jsonify({"error": "Missing 'picking_id' in payload"}), 400
+        if not rename_map:
+            return jsonify({"error": "Missing 'rename_map' in payload"}), 400
+        if not plan_hash:
+            return jsonify({"error": "Missing Preview 'plan_hash' in payload"}), 400
+        from services.lot_serial import LotSerialService
+        svc = LotSerialService()
+        result = svc.apply_rename_serial(int(picking_id), rename_map, plan_hash)
+        status_code = 200 if not result.get("errors") else 422
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Error in lot_serial_rename_apply")
         return jsonify({"error": str(e)}), 500
 
 
@@ -559,6 +772,9 @@ if __name__ == "__main__":
 
     # Start Follow Activity watcher (creates activities on order state change)
     start_follow_activity_watcher()
+
+    # Start Return Activity watcher (activity on new stock.picking returns)
+    start_return_activity_watcher()
 
     # Start Flask with a production-ready WSGI server
     try:

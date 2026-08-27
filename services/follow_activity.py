@@ -4,7 +4,8 @@ Follow Activity on Order State Change — Background Polling Service.
 Monitors sale.order for changes to x_studio_selection_field_q4_1imrcsjj8 (Order State).
 When the field changes to a trigger value (e.g. 'Hàng về/Chờ thi công'),
 creates Follow activities (mail.activity type=Follow) for:
-  - Fixed users (configurable: Ngô Trọng Cả, Hoàng Thị Ngọc Bích, Nguyễn Quỳnh Như)
+  - Fixed users (configurable: Hoàng Thị Ngọc Bích, Nguyễn Quỳnh Như)
+  - A company-specific user (Bonario: Ngô Trọng Cả; Ordinaire: Phan Minh Tuấn)
   - The SO's salesperson (dynamic — user_id field)
 
 Snapshot {so_id: last_known_state} is persisted to {DATA_DIR}/follow_activity_snapshot.json
@@ -29,6 +30,7 @@ _TRIGGER_VALUES = set(Config.FOLLOW_ACTIVITY_TRIGGER_VALUES)
 _POLL_INTERVAL = Config.FOLLOW_ACTIVITY_POLL_INTERVAL
 _ACTIVITY_TYPE_ID = Config.FOLLOW_ACTIVITY_TYPE_ID
 _FIXED_USER_IDS = set(Config.FOLLOW_ACTIVITY_FIXED_USER_IDS)
+_COMPANY_USER_IDS = Config.FOLLOW_ACTIVITY_COMPANY_USER_IDS
 _DEADLINE_DAYS = Config.FOLLOW_ACTIVITY_DEADLINE_DAYS
 
 # ─── Runtime state ───
@@ -100,7 +102,7 @@ def _fetch_sos_with_trigger_state() -> list:
     if not so_ids:
         return []
     return odoo.read("sale.order", so_ids, fields=[
-        "id", "name", "partner_id", "user_id",
+        "id", "name", "partner_id", "user_id", "company_id",
         "x_studio_selection_field_q4_1imrcsjj8",
     ])
 
@@ -145,7 +147,10 @@ def _create_follow_activity(so: dict, user_id: int, user_name: str) -> int:
 
 def _poll_and_create_activities(snapshot: dict) -> dict:
     """Poll for SOs with trigger state and create activities for state changes."""
-    global _total_activities_created, _total_so_triggered
+    global _total_activities_created, _total_so_triggered, _last_poll
+
+    poll_start = datetime.now()
+    _last_poll = poll_start.strftime("%Y-%m-%d %H:%M:%S") + " ICT"
 
     # 1. Fetch SOs currently in trigger state
     sos = _fetch_sos_with_trigger_state()
@@ -171,20 +176,28 @@ def _poll_and_create_activities(snapshot: dict) -> dict:
             logger.info(f"[FOLLOW]   {so.get('name','?')}: state changed "
                         f"'{last_state}' → '{current_state}' — creating activities")
 
-            # Build target user list: fixed users + salesperson (dedup)
+            # Build target user list: fixed users + company user + salesperson (dedup)
             salesperson = so.get("user_id")
             sp_id = salesperson[0] if isinstance(salesperson, (list, tuple)) else None
             sp_name = salesperson[1] if isinstance(salesperson, (list, tuple)) and len(salesperson) > 1 else "?"
 
+            company = so.get("company_id")
+            company_id = company[0] if isinstance(company, (list, tuple)) else company
+            company_user_id = _COMPANY_USER_IDS.get(company_id)
+
             target_users = set(_FIXED_USER_IDS)
+            if company_user_id:
+                target_users.add(company_user_id)
             if sp_id:
                 target_users.add(sp_id)
 
-            # Fetch user names for fixed users
+            # Fetch user names for configured users
             user_names = {}
-            fixed_to_lookup = list(_FIXED_USER_IDS)
-            if fixed_to_lookup:
-                users = odoo.read("res.users", fixed_to_lookup, fields=["id", "name"])
+            configured_to_lookup = set(_FIXED_USER_IDS)
+            if company_user_id:
+                configured_to_lookup.add(company_user_id)
+            if configured_to_lookup:
+                users = odoo.read("res.users", list(configured_to_lookup), fields=["id", "name"])
                 user_names = {u["id"]: u["name"] for u in users}
             if sp_id:
                 user_names[sp_id] = sp_name
@@ -222,7 +235,8 @@ def _watcher_loop():
     interval = _POLL_INTERVAL
     logger.info(f"[FOLLOW] Watcher starting — interval: {interval}s, "
                 f"trigger values: {_TRIGGER_VALUES}, "
-                f"fixed users: {sorted(_FIXED_USER_IDS)}")
+                f"fixed users: {sorted(_FIXED_USER_IDS)}, "
+                f"company users: {_COMPANY_USER_IDS}")
 
     time.sleep(15)  # Stagger start to avoid burst
 
@@ -288,6 +302,7 @@ def get_follow_activity_status() -> dict:
         "trigger_values": list(_TRIGGER_VALUES),
         "activity_type_id": _ACTIVITY_TYPE_ID,
         "fixed_user_ids": sorted(_FIXED_USER_IDS),
+        "company_user_ids": _COMPANY_USER_IDS,
         "last_poll": _last_poll,
         "total_polls": _total_polls,
         "total_activities_created": _total_activities_created,

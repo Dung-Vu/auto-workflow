@@ -53,6 +53,12 @@ _total_skipped_has_number = 0
 _total_errors = 0
 _last_result = None
 
+# Polling fallback stats
+_poller_running = False
+_poller_last_run = None
+_poller_total_runs = 0
+_poller_total_assigned = 0
+
 
 def generate_doc_number(approval_id: int) -> dict:
     """
@@ -64,98 +70,102 @@ def generate_doc_number(approval_id: int) -> dict:
     Returns:
         dict with result details.
     """
-    global _last_result
+    global _last_result, _total_requests, _total_assigned, _total_skipped_has_number, _total_errors
 
     _total_requests += 1
     logger.info(f"[DOC-NUM] Processing approval.request id={approval_id}")
 
-    # 1. Fetch the approval.request record
-    recs = odoo.read("approval.request", [approval_id], fields=[
-        "id", "name", "request_owner_id", "x_studio_documents_number",
-        "x_studio_documents_types", "company_id",
-    ])
-    if not recs:
-        raise ValueError(f"approval.request {approval_id} not found")
+    try:
+        # 1. Fetch the approval.request record
+        recs = odoo.read("approval.request", [approval_id], fields=[
+            "id", "name", "request_owner_id", "x_studio_documents_number",
+            "x_studio_documents_types", "company_id",
+        ])
+        if not recs:
+            raise ValueError(f"approval.request {approval_id} not found")
 
-    rec = recs[0]
-    existing = rec.get("x_studio_documents_number")
+        rec = recs[0]
+        existing = rec.get("x_studio_documents_number")
 
-    # 2. Guard: skip if already has a document number (fixes waste bug)
-    if existing:
-        _total_skipped_has_number += 1
-        logger.info(f"[DOC-NUM]   {rec.get('name','?')}: already has '{existing}' — skip")
+        # 2. Guard: skip if already has a document number (fixes waste bug)
+        if existing:
+            _total_skipped_has_number += 1
+            logger.info(f"[DOC-NUM]   {rec.get('name','?')}: already has '{existing}' — skip")
+            result = {
+                "approval_id": approval_id,
+                "name": rec.get("name"),
+                "action": "skipped",
+                "reason": "already_has_number",
+                "existing_number": existing,
+            }
+            _last_result = result
+            return result
+
+        # 3. Lookup hr.employee by request_owner_id
+        owner = rec.get("request_owner_id")
+        owner_id = owner[0] if isinstance(owner, (list, tuple)) else owner
+        owner_name = owner[1] if isinstance(owner, (list, tuple)) and len(owner) > 1 else "?"
+
+        dept_code = "NoDept"
+        if owner_id:
+            emps = odoo.search_read(
+                "hr.employee",
+                [["user_id", "=", owner_id]],
+                fields=["id", "department_id"],
+                limit=1,
+            )
+            if emps:
+                dept = emps[0].get("department_id")
+                dept_name = dept[1] if isinstance(dept, (list, tuple)) else None
+                dept_code = DEPT_MAP.get(dept_name, "OTH") if dept_name else "NoDept"
+                logger.info(f"[DOC-NUM]   Owner={owner_name}, dept={dept_name} → {dept_code}")
+            else:
+                logger.warning(f"[DOC-NUM]   No hr.employee found for user_id={owner_id}")
+
+        # 4. Map company → company_code
+        company = rec.get("company_id")
+        company_name = company[1] if isinstance(company, (list, tuple)) and len(company) > 1 else None
+        company_code = COMPANY_MAP.get(company_name, "CMP") if company_name else "CMP"
+
+        # 5. Document type (from selection field, fallback 'XX')
+        doc_type = rec.get("x_studio_documents_types") or "XX"
+
+        # 6. Get next sequence number (atomic, Odoo-side)
+        seq_num = odoo.execute(
+            "ir.sequence", "next_by_code",
+            [Config.APPROVAL_DOC_SEQUENCE_CODE],
+        )
+        if not seq_num:
+            seq_num = Config.APPROVAL_DOC_FALLBACK_NUM
+            logger.warning(f"[DOC-NUM]   next_by_code returned None — using fallback '{seq_num}'")
+
+        # 7. Build document number
+        doc_number = f"{seq_num}/{doc_type}-{dept_code}/{company_code}"
+        logger.info(f"[DOC-NUM]   Generated: {doc_number}")
+
+        # 8. Write back to approval.request
+        odoo.write("approval.request", [approval_id], {
+            "x_studio_documents_number": doc_number,
+        })
+        _total_assigned += 1
+        logger.info(f"[DOC-NUM]   ✅ Written to approval.request {approval_id}")
+
         result = {
             "approval_id": approval_id,
             "name": rec.get("name"),
-            "action": "skipped",
-            "reason": "already_has_number",
-            "existing_number": existing,
+            "action": "assigned",
+            "doc_number": doc_number,
+            "seq_num": seq_num,
+            "doc_type": doc_type,
+            "dept_code": dept_code,
+            "company_code": company_code,
+            "owner": owner_name,
         }
         _last_result = result
         return result
-
-    # 3. Lookup hr.employee by request_owner_id
-    owner = rec.get("request_owner_id")
-    owner_id = owner[0] if isinstance(owner, (list, tuple)) else owner
-    owner_name = owner[1] if isinstance(owner, (list, tuple)) and len(owner) > 1 else "?"
-
-    dept_code = "NoDept"
-    if owner_id:
-        emps = odoo.search_read(
-            "hr.employee",
-            [["user_id", "=", owner_id]],
-            fields=["id", "department_id"],
-            limit=1,
-        )
-        if emps:
-            dept = emps[0].get("department_id")
-            dept_name = dept[1] if isinstance(dept, (list, tuple)) else None
-            dept_code = DEPT_MAP.get(dept_name, "OTH") if dept_name else "NoDept"
-            logger.info(f"[DOC-NUM]   Owner={owner_name}, dept={dept_name} → {dept_code}")
-        else:
-            logger.warning(f"[DOC-NUM]   No hr.employee found for user_id={owner_id}")
-
-    # 4. Map company → company_code
-    company = rec.get("company_id")
-    company_name = company[1] if isinstance(company, (list, tuple)) and len(company) > 1 else None
-    company_code = COMPANY_MAP.get(company_name, "CMP") if company_name else "CMP"
-
-    # 5. Document type (from selection field, fallback 'XX')
-    doc_type = rec.get("x_studio_documents_types") or "XX"
-
-    # 6. Get next sequence number (atomic, Odoo-side)
-    seq_num = odoo.execute(
-        "ir.sequence", "next_by_code",
-        [Config.APPROVAL_DOC_SEQUENCE_CODE],
-    )
-    if not seq_num:
-        seq_num = Config.APPROVAL_DOC_FALLBACK_NUM
-        logger.warning(f"[DOC-NUM]   next_by_code returned None — using fallback '{seq_num}'")
-
-    # 7. Build document number
-    doc_number = f"{seq_num}/{doc_type}-{dept_code}/{company_code}"
-    logger.info(f"[DOC-NUM]   Generated: {doc_number}")
-
-    # 8. Write back to approval.request
-    odoo.write("approval.request", [approval_id], {
-        "x_studio_documents_number": doc_number,
-    })
-    _total_assigned += 1
-    logger.info(f"[DOC-NUM]   ✅ Written to approval.request {approval_id}")
-
-    result = {
-        "approval_id": approval_id,
-        "name": rec.get("name"),
-        "action": "assigned",
-        "doc_number": doc_number,
-        "seq_num": seq_num,
-        "doc_type": doc_type,
-        "dept_code": dept_code,
-        "company_code": company_code,
-        "owner": owner_name,
-    }
-    _last_result = result
-    return result
+    except Exception:
+        _total_errors += 1
+        raise
 
 
 def get_approval_doc_number_status() -> dict:
@@ -169,6 +179,9 @@ def get_approval_doc_number_status() -> dict:
         "total_errors": _total_errors,
         "last_result": _last_result,
         "poller_active": _poller_running,
+        "poller_last_run": _poller_last_run,
+        "poller_total_runs": _poller_total_runs,
+        "poller_total_assigned": _poller_total_assigned,
     }
 
 
@@ -178,11 +191,6 @@ def get_approval_doc_number_status() -> dict:
 
 import threading
 import time as _time
-
-_poller_running = False
-_poller_last_run = None
-_poller_total_runs = 0
-_poller_total_assigned = 0
 
 POLL_INTERVAL = int(os.getenv("APPROVAL_DOC_POLL_INTERVAL", "30"))
 
@@ -210,7 +218,7 @@ def _poll_missing_doc_numbers():
                 assigned += 1
         except Exception as e:
             logger.error(f"[DOC-NUM] Poller: error on approval {rec_id}: {e}")
-            _total_errors += 1
+            # Already counted in generate_doc_number, no duplicate increment needed
 
     _poller_total_assigned += assigned
     return assigned

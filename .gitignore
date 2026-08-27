@@ -6,4 +6,5 @@ auto-workflow.log
 venv/
 .venv/
 data/
+cookie*.json
 

@@ -1,0 +1,172 @@
+"""
+Serial Naming Utilities — sanitize names & build serial codes.
+
+Handles Vietnamese diacritics removal, special character cleanup,
+and the serial naming conventions for PO receipts and MO finished goods.
+"""
+
+import re
+import unicodedata
+import hashlib
+import json
+
+
+def sanitize_name(text: str) -> str:
+    """Sanitize a name for use in serial codes.
+
+    Rules:
+      1. Uppercase
+      2. Remove Vietnamese diacritics (NFD decomposition + strip combining marks)
+      3. Replace invalid characters (anything not A-Z, 0-9, /, -) with '-'
+      4. Collapse consecutive dashes ('--' → '-')
+      5. Strip leading/trailing dashes
+
+    Examples:
+      >>> sanitize_name("Giường NERISSA")
+      'GIUONG-NERISSA'
+      >>> sanitize_name("BED (KING SIZE)")
+      'BED-KING-SIZE-'  # trailing dash stripped
+      'BED-KING-SIZE'
+      >>> sanitize_name("O-MH08966")
+      'O-MH08966'
+    """
+    if not text:
+        return ""
+
+    # Uppercase first
+    text = text.upper()
+
+    # Normalize to NFD → strip combining marks (diacritics)
+    # This converts "Ă" → "A" + combining breve, then we remove the breve
+    nfkd = unicodedata.normalize("NFD", text)
+    stripped = "".join(
+        ch for ch in nfkd
+        if unicodedata.category(ch) != "Mn"  # Mn = Mark, Nonspacing
+    )
+
+    # Special handling for Vietnamese Đ/đ (not decomposed by NFD)
+    stripped = stripped.replace("Đ", "D").replace("đ", "D")
+
+    # Replace any character that isn't alphanumeric, '/', or '-' with '-'
+    cleaned = re.sub(r"[^A-Z0-9/\-]", "-", stripped)
+
+    # Collapse consecutive dashes
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+
+    # Strip leading/trailing dashes
+    cleaned = cleaned.strip("-")
+
+    return cleaned
+
+
+def product_serial_slug(product_name: str) -> str:
+    """Return the stable product segment used in workflow-created serials.
+
+    Odoo's ``display_name`` commonly includes an ``ORD-`` prefix and variant
+    values in parentheses.  Those are not part of the business serial name.
+    """
+    value = (product_name or "").strip()
+    if value.upper().startswith("ORD-"):
+        value = value[4:]
+    if "(" in value:
+        value = value.split("(", 1)[0]
+    return sanitize_name(value) or "PRODUCT"
+
+
+def serial_prefix(source_name: str, product_name: str) -> str:
+    """Build the immutable portion preceding the running serial sequence."""
+    source_part = sanitize_name(source_name)
+    if not source_part:
+        raise ValueError("Source document name is empty")
+    return f"{source_part}-{product_serial_slug(product_name)}-"
+
+
+def build_plan_hash(kind: str, record_id: int, rows: list[dict]) -> str:
+    """Hash a preview plan so Apply cannot silently use a stale preview."""
+    body = [
+        {
+            "line_id": row.get("move_line_id"),
+            "lot_id": row.get("lot_id"),
+            "old_name": row.get("old_name"),
+            "new_name": row.get("new_name"),
+            "proposed_serial": row.get("proposed_serial"),
+        }
+        for row in rows
+    ]
+    payload = json.dumps(
+        {"kind": kind, "record_id": record_id, "rows": body},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_receipt_serial(po_name: str, product_name: str, index: int) -> str:
+    """Build serial code for a PO receipt line.
+
+    Format: {SANITIZED_PO_NAME}-{SANITIZED_PRODUCT_NAME}-{INDEX:03d}
+    Example: O-MH08966-BED-NERISSA-001
+
+    Args:
+        po_name: purchase.order.name (e.g. "O-MH08966")
+        product_name: product display name (e.g. "BED NERISSA")
+        index: 1-based sequence number
+    """
+    return f"{serial_prefix(po_name, product_name)}{index:03d}"
+
+
+def build_mo_serial(mo_name: str, product_name: str, index: int) -> str:
+    """Build serial code for a MO finished product line.
+
+    Format: {SANITIZED_MO_NAME}-{SANITIZED_PRODUCT_NAME}-{INDEX:03d}
+    Example: SBC/00027-BED-NERISSA-001
+
+    Note: MO names may contain '/' (e.g. SBC/00027) which is preserved.
+
+    Args:
+        mo_name: mrp.production.name (e.g. "SBC/00027")
+        product_name: product display name (e.g. "BED NERISSA")
+        index: 1-based sequence number
+    """
+    return f"{serial_prefix(mo_name, product_name)}{index:03d}"
+
+
+def build_receipt_from_mo_serial(mo_name: str, product_name: str, index: int) -> str:
+    """Build serial for a receipt that originates from a Manufacturing Order.
+
+    Same format as build_mo_serial — used when a receipt's origin
+    traces back to an mrp.production instead of a purchase.order.
+
+    Args:
+        mo_name: mrp.production.name
+        product_name: product display name
+        index: 1-based sequence number
+    """
+    return build_mo_serial(mo_name, product_name, index)
+
+
+# ─── Temp Serial Detection ──────────────────────────────────────
+
+# Pattern: anything ending with -NNN (3+ digit suffix)
+# where the body contains at least two '-' separated segments.
+# This matches serials generated by this workflow like:
+#   O-MH08966-BED-NERISSA-001
+#   SBC/00027-BED-NERISSA-001
+_TEMP_SERIAL_PATTERN = re.compile(
+    r"^[A-Z0-9/\-]+-[A-Z0-9/\-]+-\d{3,}$"
+)
+
+
+def is_temp_serial(lot_name: str) -> bool:
+    """Check if a serial name was generated by this workflow.
+
+    Temp serials match the pattern: PREFIX-PRODUCT-NNN
+    where NNN is a zero-padded 3+ digit sequence number.
+
+    This is a conservative heuristic — it may match some real serials
+    that happen to end with -NNN. The rename flow uses additional
+    context (lot origin, picking history) to confirm.
+    """
+    if not lot_name:
+        return False
+    return bool(_TEMP_SERIAL_PATTERN.match(lot_name.upper()))

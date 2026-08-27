@@ -35,8 +35,8 @@ from services.odoo_client import odoo
 logger = logging.getLogger(__name__)
 
 # ─── Odoo credentials ───
-_ODDO_UID = Config.ODOO_UID
-_ODDO_API_KEY = Config.ODOO_API_KEY
+_ODOO_UID = Config.ODOO_UID
+_ODOO_API_KEY = Config.ODOO_API_KEY
 
 # ─── Config ───
 _POLL_INTERVAL = Config.OP_DELIVERY_DATE_POLL_INTERVAL
@@ -93,7 +93,7 @@ def _fetch_modified_so(last_poll_str: str) -> list:
     if last_poll_str:
         domain.append(("write_date", ">", last_poll_str))
 
-    so_ids = odoo.search(domain, limit=200)
+    so_ids = odoo.search("sale.order", domain, limit=200)
     if not so_ids:
         return []
 
@@ -122,11 +122,12 @@ def _fetch_pickings(picking_ids: list) -> list:
 
 def _poll_and_sync(snapshot: dict) -> dict:
     """Poll for modified SOs and sync delivery date to pickings."""
-    global _total_synced, _total_skipped
+    global _total_synced, _total_skipped, _last_poll
 
     last_poll_str = snapshot.get("last_poll")
     poll_start = datetime.now(timezone.utc)
     poll_start_str = poll_start.strftime("%Y-%m-%d %H:%M:%S")
+    _last_poll = poll_start_str + " UTC"
 
     # 1. Fetch modified SOs with delivery date set
     sos = _fetch_modified_so(last_poll_str)
@@ -262,7 +263,7 @@ def start_op_delivery_date_watcher():
         logger.warning("[OP-DELIVERY] OP_DELIVERY_DATE_ENABLED not true — "
                        "watcher disabled")
         return
-    if not _ODDO_UID and not Config.ODOO_USER:
+    if not _ODOO_UID and not Config.ODOO_USER:
         logger.warning("[OP-DELIVERY] Odoo credentials not set — watcher disabled")
         return
 

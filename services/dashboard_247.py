@@ -84,7 +84,7 @@ ACTIVITY_TYPE_COLS = [
 def date_to_excel(dt):
     """Convert a Python date to an Excel date serial number."""
     base = date(1899, 12, 30)
-    return (dt - base).days + 1
+    return (dt - base).days
 
 
 def month_end_excel(year, month):

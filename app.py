@@ -58,6 +58,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 from config import Config
 from utils.phone import normalize_phone_zalo
 from services.zalo_zns import send_zns, handle_authorization_callback, start_auto_refresh, get_token_status
+from services.zns_tracking import start_reconciliation, get_reconciliation_status, ZNSTrackingService
+from routes.zns_routes import zns_bp
 from services.shopify_contact import sync_shopify_customer
 from services.shopify_contact_bon import sync_bonario_customer
 from services.delivery_tracking import track_delivery
@@ -77,9 +79,11 @@ from services.op_delivery_date import start_op_delivery_date_watcher, get_op_del
 from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status, start_approval_doc_number_poller
 from services.follow_activity import start_follow_activity_watcher, get_follow_activity_status
 from services.return_activity import start_return_activity_watcher, get_return_activity_status
+from services.zns_odoo_poller import start_odoo_poller, stop_odoo_poller, get_odoo_poller_status
 
 
 app = Flask(__name__)
+app.register_blueprint(zns_bp)
 
 
 # ═══════════════════════════════════════════
@@ -97,11 +101,27 @@ def health():
         except Exception as e:
             lot_serial_status["error"] = str(e)
 
+    # ZNS Tracking DB health check (fast check without leaking data)
+    zns_db_status = "connected"
+    try:
+        from services.zns_repository import get_repository
+        repo = get_repository()
+        conn = repo.get_connection()
+        conn.execute("SELECT 1 FROM schema_migrations LIMIT 1;").fetchone()
+        conn.close()
+    except Exception as e:
+        zns_db_status = f"error: {e}"
+
     return jsonify({
         "status": "ok",
         "service": "auto-workflow",
         "timestamp": datetime.now().isoformat(),
         "zns_tokens": get_token_status(),
+        "zns_tracking": {
+            "db_status": zns_db_status,
+            "reconciliation": get_reconciliation_status(),
+        },
+        "zns_odoo_poller": get_odoo_poller_status(),
         "conducted": get_conducted_status(),
         "deadline_watcher": get_deadline_watcher_status(),
         "crm_lost_watcher": get_crm_lost_status(),
@@ -127,9 +147,12 @@ def health():
             "/webhook/rating-ord-eng",
             "/webhook/rating-ord-vie",
             "/webhook/rating",
+            "/webhook/zalo/zns-delivery",
             "/webhook/zns-done",
             "/webhook/conducted",
             "/webhook/approval-doc-number",
+            "/api/zns/messages",
+            "/api/zns/stats",
             "/lot-serial/receipt/preview",
             "/lot-serial/receipt/apply",
             "/lot-serial/mo/preview",
@@ -138,6 +161,7 @@ def health():
             "/lot-serial/rename/apply",
             "/lot-serial/setup",
             "/lot-serial/status",
+
         ],
     })
 
@@ -203,63 +227,10 @@ def delivery_tracking():
 
 
 # ═══════════════════════════════════════════
-#  ZNS — 5 ROUTES (UNIFIED HANDLER)
+#  ZNS 5 INBOUND ROUTES & WEBHOOKS
+#  (Handled via zns_bp in routes/zns_routes.py)
 # ═══════════════════════════════════════════
 
-ZNS_ROUTES = ["hdsd-eng", "hdsd-vie", "rating-ord-eng", "rating-ord-vie", "rating"]
-
-
-def _handle_zns(template_type: str):
-    """Unified ZNS handler for all 5 ZNS webhook routes."""
-    try:
-        data = request.get_json(force=True)
-        body = data.get("body", data)  # Support both wrapped and flat payloads
-
-        # Extract fields (from Odoo webhook payload)
-        phone_raw = body.get("x_studio_phone", "")
-        order_code = body.get("name", "")
-        customer_name = body.get("x_studio_tn_khch_hng", "")
-        date_order = body.get("date_order", "")
-
-        # Normalize phone
-        phone = normalize_phone_zalo(phone_raw)
-
-        # Format date to DD/MM/YYYY
-        date_formatted = ""
-        if date_order:
-            try:
-                d = datetime.strptime(date_order.replace("T", " ").split(".")[0], "%Y-%m-%d %H:%M:%S")
-                date_formatted = d.strftime("%d/%m/%Y")
-            except ValueError:
-                try:
-                    d = datetime.strptime(date_order[:10], "%Y-%m-%d")
-                    date_formatted = d.strftime("%d/%m/%Y")
-                except ValueError:
-                    date_formatted = date_order
-
-        result = send_zns(
-            template_type=template_type,
-            phone=phone,
-            order_code=order_code,
-            order_date=date_formatted,
-            customer_name=customer_name,
-        )
-
-        return jsonify({"status": "sent", "zns_response": result}), 200
-
-    except Exception as e:
-        logger.exception(f"Error in ZNS [{template_type}]")
-        return jsonify({"error": str(e)}), 500
-
-
-# Register all 5 ZNS routes
-for route in ZNS_ROUTES:
-    app.add_url_rule(
-        f"/webhook/{route}",
-        endpoint=f"zns_{route.replace('-', '_')}",
-        view_func=lambda rt=route: _handle_zns(rt),
-        methods=["POST"],
-    )
 
 
 # ═══════════════════════════════════════════
@@ -720,61 +691,99 @@ if __name__ == "__main__":
     logger.info(f"  Shopify: {Config.SHOPIFY_STORE}")
     logger.info("=" * 60)
 
-    # Start Telegram bot in background thread
-    if Config.TELEGRAM_BOT_TOKEN:
-        bot_thread = threading.Thread(target=_start_telegram_bot, daemon=True)
-        bot_thread.start()
-        logger.info("🤖 Telegram RFID bot thread started")
+    _disable_daemons = (
+        Config.ENVIRONMENT == "test"
+        or Config.ZNS_DISABLE_BACKGROUND_DAEMONS
+    )
+    if _disable_daemons:
+        logger.info(
+            "Background daemons disabled "
+            f"(ENVIRONMENT={Config.ENVIRONMENT}, ZNS_DISABLE_BACKGROUND_DAEMONS={Config.ZNS_DISABLE_BACKGROUND_DAEMONS})"
+        )
     else:
-        logger.warning("TELEGRAM_BOT_TOKEN not set — RFID bot disabled")
+        # Start Telegram bot in background thread
+        if Config.TELEGRAM_BOT_TOKEN:
+            bot_thread = threading.Thread(target=_start_telegram_bot, daemon=True)
+            bot_thread.start()
+            logger.info("🤖 Telegram RFID bot thread started")
+        else:
+            logger.warning("TELEGRAM_BOT_TOKEN not set — RFID bot disabled")
 
-    # Start ZNS auto-refresh (keeps token alive forever)
-    start_auto_refresh()
+        # Start ZNS auto-refresh (keeps token alive forever)
+        start_auto_refresh()
 
-    # Start Conducted scheduler (08:00 ICT daily)
-    start_conducted_scheduler()
+        # Start ZNS reconciliation (stale accepted message tracking)
+        start_reconciliation()
 
-    # Start Deadline Watcher (polls mail.activity for deadline extensions)
-    start_deadline_watcher()
+        # Start ZNS Odoo Poller (polls Odoo 19 Online for pending dispatches)
+        start_odoo_poller()
 
-    # Start CRM Lost Watcher (cancels activities on lost leads)
-    start_crm_lost_watcher()
+        # Start Conducted scheduler (08:00 ICT daily)
+        start_conducted_scheduler()
 
-    # Start Completion Days scheduler (Monday 08:00 ICT weekly)
-    start_completion_days_scheduler()
+        # Start Deadline Watcher (polls mail.activity for deadline extensions)
+        start_deadline_watcher()
 
-    # Start Dashboard 259 Approval scheduler (1st of month 06:00 ICT)
-    start_dashboard_259_scheduler()
+        # Start CRM Lost Watcher (cancels activities on lost leads)
+        start_crm_lost_watcher()
 
-    # Start KHO MAU CTL Overdue scheduler (daily 11:00 ICT)
-    start_ctl_scheduler()
+        # Start Completion Days scheduler (Monday 08:00 ICT weekly)
+        start_completion_days_scheduler()
 
-    # Start Checklist Overdue scheduler (1st of month 00:00 ICT)
-    start_checklist_overdue_scheduler()
+        # Start Dashboard 259 Approval scheduler (1st of month 06:00 ICT)
+        start_dashboard_259_scheduler()
 
-    # Start Dashboard 247 SC Activities scheduler (1st of month 06:00 ICT)
-    start_dashboard_247_scheduler()
+        # Start KHO MAU CTL Overdue scheduler (daily 11:00 ICT)
+        start_ctl_scheduler()
 
-    # Start Section 3 Timeline scheduler (1st of month 06:00 ICT)
-    start_section3_timeline_scheduler()
+        # Start Checklist Overdue scheduler (1st of month 00:00 ICT)
+        start_checklist_overdue_scheduler()
 
-    # Start Section 5.2 SO-to-FSM Violations scheduler (1st of month 06:00 ICT)
-    start_section5_2_scheduler()
+        # Start Dashboard 247 SC Activities scheduler (1st of month 06:00 ICT)
+        start_dashboard_247_scheduler()
 
-    # Start Commission Revenue watcher (polls sale.order every 60s)
-    start_commission_revenue_watcher()
+        # Start Section 3 Timeline scheduler (1st of month 06:00 ICT)
+        start_section3_timeline_scheduler()
 
-    # Start OP Delivery Date watcher (syncs SO delivery date to picking scheduled_date)
-    start_op_delivery_date_watcher()
+        # Start Section 5.2 SO-to-FSM Violations scheduler (1st of month 06:00 ICT)
+        start_section5_2_scheduler()
 
-    # Start Approval Doc Number poller (fallback for webhook — catches missed records)
-    start_approval_doc_number_poller()
+        # Start Commission Revenue watcher (polls sale.order every 60s)
+        start_commission_revenue_watcher()
 
-    # Start Follow Activity watcher (creates activities on order state change)
-    start_follow_activity_watcher()
+        # Start OP Delivery Date watcher (syncs SO delivery date to picking scheduled_date)
+        start_op_delivery_date_watcher()
 
-    # Start Return Activity watcher (activity on new stock.picking returns)
-    start_return_activity_watcher()
+        # Start Approval Doc Number poller (fallback for webhook — catches missed records)
+        start_approval_doc_number_poller()
+
+        # Start Follow Activity watcher (creates activities on order state change)
+        start_follow_activity_watcher()
+
+        # Start Return Activity watcher (activity on new stock.picking returns)
+        start_return_activity_watcher()
+
+    # Register graceful lifecycle shutdown
+    import atexit
+    import signal
+    from services.zns_tracking import stop_reconciliation
+
+    def _shutdown_daemons():
+        logger.info("Shutting down background daemons...")
+        stop_odoo_poller()
+        stop_reconciliation()
+
+    def _signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, initiating graceful process termination...")
+        _shutdown_daemons()
+        sys.exit(0)
+
+    atexit.register(_shutdown_daemons)
+    try:
+        signal.signal(signal.SIGTERM, _signal_handler)
+        signal.signal(signal.SIGINT, _signal_handler)
+    except Exception:
+        pass
 
     # Start Flask with a production-ready WSGI server
     try:

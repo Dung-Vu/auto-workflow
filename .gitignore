@@ -7,4 +7,9 @@ venv/
 .venv/
 data/
 cookie*.json
+*.sqlite3
+*.db
+*.sqlite
+.DS_Store
+.pytest_cache/
 

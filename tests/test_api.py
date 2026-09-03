@@ -1,11 +1,12 @@
 """Test Shopify API token for both Ordinaire and Bonario stores."""
+__test__ = False
 import requests
 from config import Config
 
 def test_store(store_name, store_domain, token):
     print(f"\n--- Testing {store_name} ({store_domain}) ---")
     headers = {"X-Shopify-Access-Token": token}
-    
+
     # Test shop endpoint
     url = f"https://{store_domain}/admin/api/2024-07/shop.json"
     try:

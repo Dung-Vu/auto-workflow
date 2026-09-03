@@ -12,6 +12,9 @@ load_dotenv()
 class Config:
     """Application configuration from environment variables."""
 
+    # Environment mode: 'development', 'staging', 'production', 'test'
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
     # Flask
     FLASK_PORT = int(os.getenv("FLASK_PORT") or "5050")
     FLASK_DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
@@ -217,3 +220,35 @@ class Config:
         "rating-ord-vie": {"name_key": "name", "include_date": True},
         "rating": {"name_key": "customer_name", "include_date": True},
     }
+
+    # Zalo App & OA Configuration (ORD / Bonario)
+    ZALO_APP_ID = os.getenv("ZALO_APP_ID", "")
+    ZALO_SECRET_KEY = os.getenv("ZALO_SECRET_KEY", "")
+    ZALO_OA_ID = os.getenv("ZALO_OA_ID", "")
+
+    ZALO_BON_APP_ID = os.getenv("ZALO_BON_APP_ID", "")
+    ZALO_BON_SECRET_KEY = os.getenv("ZALO_BON_SECRET_KEY", "")
+    ZALO_BON_OA_ID = os.getenv("ZALO_BON_OA_ID", "")
+
+    # ZNS Tracking, Security & Persistence
+    ZNS_DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+    ZNS_TRACKING_DB_PATH = os.getenv(
+        "ZNS_TRACKING_DB_PATH",
+        os.path.join(ZNS_DATA_DIR, "zns_tracking.sqlite3"),
+    )
+    ZNS_ADMIN_API_KEY = os.getenv("ZNS_ADMIN_API_KEY", "")
+    ZNS_INBOUND_API_KEY = os.getenv("ZNS_INBOUND_API_KEY", "")
+    ZNS_INBOUND_AUTH_REQUIRED = os.getenv("ZNS_INBOUND_AUTH_REQUIRED", "true").lower() == "true"
+    ZNS_PHONE_HASH_KEY = os.getenv("ZNS_PHONE_HASH_KEY", "")
+    ZNS_ALLOW_INSECURE_DEV = os.getenv("ZNS_ALLOW_INSECURE_DEV", "false").lower() == "true"
+
+    # ZNS SLA, Webhook & Reconciliation
+    ZNS_DELIVERY_SLA_SECONDS = int(os.getenv("ZNS_DELIVERY_SLA_SECONDS", "1800"))  # 30 mins
+    ZNS_RECONCILIATION_ENABLED = os.getenv("ZNS_RECONCILIATION_ENABLED", "true").lower() == "true"
+    ZNS_DISABLE_BACKGROUND_DAEMONS = os.getenv("ZNS_DISABLE_BACKGROUND_DAEMONS", "false").lower() in ("1", "true", "yes")
+    ZNS_RECONCILIATION_INTERVAL = int(os.getenv("ZNS_RECONCILIATION_INTERVAL", "300"))  # 5 mins
+    ZNS_WEBHOOK_REQUIRE_SIGNATURE = os.getenv("ZNS_WEBHOOK_REQUIRE_SIGNATURE", "true").lower() == "true"
+    ZNS_WEBHOOK_TIMESTAMP_TOLERANCE = int(os.getenv("ZNS_WEBHOOK_TIMESTAMP_TOLERANCE", "300"))  # 5 mins
+    ZNS_MAX_PAYLOAD_BYTES = int(os.getenv("ZNS_MAX_PAYLOAD_BYTES", "102400"))  # 100 KB
+    ZNS_RETENTION_DAYS = int(os.getenv("ZNS_RETENTION_DAYS", "90"))
+    ZNS_DIAGNOSTICS_RETENTION_DAYS = int(os.getenv("ZNS_DIAGNOSTICS_RETENTION_DAYS", "30"))

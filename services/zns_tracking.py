@@ -5,7 +5,6 @@ strict concurrency idempotency, multi-layer delivery webhooks, reconciliation, a
 
 import os
 import json
-import html
 import hmac
 import hashlib
 import logging
@@ -16,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 from config import Config
-from services.zalo_zns import send_zns
+from services.zalo_zns import send_zns, get_zns_status
 from services.zns_repository import (
     get_repository,
     ZNSRepository,
@@ -379,7 +378,13 @@ class ZNSTrackingService:
             submitted_at=submitted_at,
         )
 
-        # 3. Call Zalo OpenAPI with tracking_id (max 48 chars)
+        # 3. Call Zalo OpenAPI with tracking_id (max 48 chars). Click data is
+        # sent only for templates explicitly enabled after Zalo approval.
+        extra_template_data = None
+        click_param = Config.ZNS_CLICK_PARAM_BY_TEMPLATE.get(template_type)
+        if click_param:
+            from services.zns_click_tracking import build_click_url
+            extra_template_data = {click_param: build_click_url(message_id)}
         try:
             raw_result = send_zns(
                 template_type=template_type,
@@ -389,6 +394,7 @@ class ZNSTrackingService:
                 customer_name=customer_name,
                 tracking_id=tracking_id,
                 mode=mode,
+                extra_template_data=extra_template_data,
             )
         except Exception as send_exc:
             # Network Timeout / Connection Error / 5xx Non-JSON
@@ -808,7 +814,8 @@ class ZNSTrackingService:
         Finds messages in ACCEPTED state older than SLA and uses Atomic CAS to move them to DELIVERY_UNKNOWN.
         """
         sla = threshold_seconds if threshold_seconds is not None else Config.ZNS_DELIVERY_SLA_SECONDS
-        stale_messages = self.repo.get_stale_accepted_messages(threshold_seconds=sla)
+        poll_after = min(sla, max(0, Config.ZNS_STATUS_POLL_AFTER_SECONDS))
+        stale_messages = self.repo.get_stale_accepted_messages(threshold_seconds=poll_after)
         if not stale_messages:
             return 0
 
@@ -817,7 +824,41 @@ class ZNSTrackingService:
 
         for msg in stale_messages:
             msg_id = msg["id"]
-            # Atomic CAS: ACCEPTED -> DELIVERY_UNKNOWN
+            try:
+                status_result = get_zns_status(msg.get("zalo_msg_id"), msg.get("app_key"))
+                status_data = status_result.get("data") or {} if isinstance(status_result, dict) else {}
+                if status_result.get("error") == 0 and int(status_data.get("status", 0)) == 1:
+                    delivery_raw = str(status_data.get("delivery_time") or "")
+                    delivered_at = now
+                    if delivery_raw.isdigit():
+                        delivered_at = datetime.fromtimestamp(int(delivery_raw) / 1000.0, timezone.utc).isoformat()
+                    success, _ = self.repo.transition_message(
+                        message_id=msg_id,
+                        expected_statuses=[STATE_ACCEPTED],
+                        new_status=STATE_DELIVERED,
+                        event_type="DELIVERY_CONFIRMED_BY_STATUS_API",
+                        event_payload=status_data,
+                        event_source="zalo_status_api",
+                        occurred_at=delivered_at,
+                        delivered_at=delivered_at,
+                        last_webhook_at=now,
+                        zalo_msg_id=msg.get("zalo_msg_id"),
+                    )
+                    if success:
+                        reconciled_count += 1
+                    continue
+            except Exception as exc:
+                logger.warning("[ZNS-RECONCILIATION] Status API lookup failed for %s: %s", msg_id, exc)
+
+            accepted_at = msg.get("accepted_at") or msg.get("updated_at") or now
+            try:
+                age = datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(accepted_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                age = sla
+            if age < sla:
+                continue
+
+            # Atomic CAS: ACCEPTED -> DELIVERY_UNKNOWN after the full SLA.
             success, updated = self.repo.transition_message(
                 message_id=msg_id,
                 expected_statuses=[STATE_ACCEPTED],
@@ -1038,7 +1079,6 @@ class ZNSOdooOutboxWorker:
         """Sync a single delivery task to Odoo via JSON-RPC 2.0."""
         source_model = task.get("source_model")
         source_record_id = task.get("source_record_id")
-        template_type = task.get("template_type", "")
         zalo_msg_id = task.get("zalo_msg_id") or ""
         delivered_at_iso = task.get("delivered_at") or _utc_now_iso()
         task_id = task.get("id")
@@ -1057,11 +1097,9 @@ class ZNSOdooOutboxWorker:
             from services.zns_odoo_client import get_zns_odoo_client
             odoo_client = get_zns_odoo_client()
 
-            deliv_display = delivered_at_iso
             odoo_utc_formatted = delivered_at_iso
             try:
                 dt = datetime.fromisoformat(delivered_at_iso.replace("Z", "+00:00"))
-                deliv_display = dt.strftime("%d/%m/%Y %H:%M:%S") + " UTC"
                 odoo_utc_formatted = dt.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 pass
@@ -1083,68 +1121,24 @@ class ZNSOdooOutboxWorker:
             if write_res is False:
                 return False, f"Odoo write returned False for {source_model}({source_record_id})"
 
-            # 2. Post Chatter Note with unique event marker and HTML escaping
-            esc_template = html.escape(str(template_type))
-            esc_msg_id = html.escape(str(zalo_msg_id))
-            esc_deliv = html.escape(str(deliv_display))
-            event_marker = f"zns_event_{source_model}_{source_record_id}_{zalo_msg_id}_{template_type}"
-
-            # Check if chatter note already exists to prevent duplicate note on retry/lost response
-            chatter_already_posted = bool(task.get("odoo_message_id"))
-            if not chatter_already_posted:
-                if not heartbeat():
-                    return False, "lost outbox lease before chatter marker lookup"
+            # Keep the original queue note synchronized as well as the fields.
+            from services.zns_odoo_poller import ZNSOdooPoller
+            message_row = self.repo.get_message_by_id(task.get("message_id")) or {}
+            idempotency_key = str(message_row.get("idempotency_key") or "")
+            send_version = 1
+            if ":v" in idempotency_key:
                 try:
-                    existing_msgs = self._call_odoo_with_heartbeat(
-                        odoo_client.search_read,
-                        "mail.message",
-                        [
-                            ("model", "=", source_model),
-                            ("res_id", "=", source_record_id),
-                            ("body", "like", event_marker),
-                        ],
-                        fields=["id"],
-                        limit=1,
-                        heartbeat=heartbeat,
-                    )
-                    if existing_msgs:
-                        chatter_already_posted = True
-                        existing_id = existing_msgs[0]["id"] if isinstance(existing_msgs[0], dict) else existing_msgs[0]
-                        self.repo.update_outbox_odoo_message_id(task["id"], existing_id, event_marker)
-                except Exception as e:
-                    # Fail closed: never post a duplicate note when marker lookup cannot be proven empty.
-                    logger.warning(f"[ZNS-OUTBOX] Chatter marker lookup failed closed: {e}")
-                    return False, f"chatter marker lookup failed: {e}"
+                    send_version = int(idempotency_key.rsplit(":v", 1)[1])
+                except ValueError:
+                    pass
+            chatter_updated = ZNSOdooPoller(odoo_client=odoo_client, repo=self.repo)._update_request_chatter_status(
+                source_model, int(source_record_id), send_version, "DELIVERED", zalo_msg_id=zalo_msg_id
+            )
+            if not chatter_updated:
+                return False, f"original queue chatter update failed for {source_model}({source_record_id}) v{send_version}"
 
-            if not chatter_already_posted:
-                if not heartbeat():
-                    return False, "lost outbox lease before chatter post"
-                chatter_body = f"""
-                <div style="border-left: 4px solid #28a745; padding-left: 10px; margin: 5px 0;">
-                    <!-- {event_marker} -->
-                    <p>📱 <b>Zalo ZNS: ĐÃ PHÁT THÀNH CÔNG TỚI THIẾT BỊ KHÁCH HÀNG</b></p>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        <li><b>Mẫu tin:</b> {esc_template}</li>
-                        <li><b>Mã tin Zalo (Msg ID):</b> <code>{esc_msg_id}</code></li>
-                        <li><b>Thời gian phát:</b> {esc_deliv}</li>
-                        <li><b>Trạng thái:</b> Đã xác thực qua Zalo DLR Webhook.</li>
-                    </ul>
-                </div>
-                """
-                post_res = self._call_odoo_with_heartbeat(
-                    odoo_client.message_post,
-                    model=source_model,
-                    record_id=source_record_id,
-                    body=chatter_body,
-                    message_type="comment",
-                    subtype_xmlid="mail.mt_note",
-                    heartbeat=heartbeat,
-                )
-                if post_res:
-                    msg_id_val = post_res if isinstance(post_res, int) else (post_res.get("id") if isinstance(post_res, dict) else None)
-                    if msg_id_val:
-                        self.repo.update_outbox_odoo_message_id(task["id"], msg_id_val, event_marker)
-
+            # Delivery never creates a second Chatter note. The original queue note
+            # above is the single source of truth and is updated in place.
             if not heartbeat():
                 return False, "lost outbox lease after Odoo sync"
             return True, None

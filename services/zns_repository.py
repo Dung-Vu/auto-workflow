@@ -141,6 +141,9 @@ class ZNSRepository:
             if 6 not in applied:
                 self._run_migration_6_safe()
 
+            if 7 not in applied:
+                self._run_migration_7_safe()
+
             _MIGRATIONS_RUN = True
 
     def _run_migration_1_safe(self):
@@ -996,6 +999,40 @@ class ZNSRepository:
                     },
                 )
                 return cur.rowcount == 1
+        finally:
+            conn.close()
+
+    def _run_migration_7_safe(self):
+        """Add durable, non-state-changing click analytics to ZNS messages."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000;")
+            conn.execute("BEGIN EXCLUSIVE TRANSACTION;")
+            if conn.execute("SELECT version FROM schema_migrations WHERE version = 7;").fetchone():
+                conn.execute("COMMIT;")
+                return
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(zns_messages);").fetchall()}
+            for name, ddl in (
+                ("clicked_at", "TEXT"),
+                ("last_clicked_at", "TEXT"),
+                ("click_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE zns_messages ADD COLUMN {name} {ddl};")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_zns_messages_clicked_at ON zns_messages(clicked_at);")
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?);",
+                (7, _utc_now_iso()),
+            )
+            conn.execute("COMMIT;")
+            logger.info("Applied ZNS tracking migration v7 (Click Tracking)")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK;")
+            except Exception:
+                pass
+            raise
         finally:
             conn.close()
 
@@ -1865,6 +1902,40 @@ class ZNSRepository:
         finally:
             conn.close()
 
+    def record_click(self, message_id: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Atomically record a human-confirmed CTA click without changing delivery state."""
+        now = _utc_now_iso()
+        conn = self.get_connection()
+        try:
+            with conn:
+                cur = conn.execute(
+                    """
+                    UPDATE zns_messages
+                    SET clicked_at = COALESCE(clicked_at, :now),
+                        last_clicked_at = :now,
+                        click_count = COALESCE(click_count, 0) + 1,
+                        updated_at = :now
+                    WHERE id = :message_id;
+                    """,
+                    {"now": now, "message_id": message_id},
+                )
+                if cur.rowcount != 1:
+                    return None
+                row = conn.execute("SELECT * FROM zns_messages WHERE id = ?;", (message_id,)).fetchone()
+                self._record_event_locked(
+                    conn=conn,
+                    message_id=message_id,
+                    event_type="CTA_CLICKED",
+                    previous_status=row["status"],
+                    new_status=row["status"],
+                    payload=metadata or {},
+                    source="click_redirect",
+                    occurred_at=now,
+                )
+                return dict(row)
+        finally:
+            conn.close()
+
     def query_events_for_message(self, message_id: str) -> List[Dict[str, Any]]:
         """Fetch all timeline events for a message in chronological order."""
         conn = self.get_connection()
@@ -1936,7 +2007,9 @@ class ZNSRepository:
                     SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END) as count_rejected,
                     SUM(CASE WHEN status = 'SUBMISSION_UNKNOWN' THEN 1 ELSE 0 END) as count_submission_unknown,
                     SUM(CASE WHEN status = 'DELIVERY_UNKNOWN' THEN 1 ELSE 0 END) as count_delivery_unknown,
-                    SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as count_cancelled
+                    SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as count_cancelled,
+                    SUM(CASE WHEN clicked_at IS NOT NULL THEN 1 ELSE 0 END) as count_clicked,
+                    SUM(COALESCE(click_count, 0)) as total_clicks
                 FROM zns_messages
                 WHERE {where_sql};
                 """,
@@ -1952,6 +2025,8 @@ class ZNSRepository:
             count_queued = counts_row["count_queued"] or 0
             count_submitting = counts_row["count_submitting"] or 0
             count_cancelled = counts_row["count_cancelled"] or 0
+            count_clicked = counts_row["count_clicked"] or 0
+            total_clicks = counts_row["total_clicks"] or 0
 
             # Total processed/attempted (excluding QUEUED/SUBMITTING)
             total_accepted_ever = count_accepted + count_delivered + count_del_unknown
@@ -2092,12 +2167,15 @@ class ZNSRepository:
                     "submission_unknown": count_sub_unknown,
                     "delivery_unknown": count_del_unknown,
                     "cancelled": count_cancelled,
+                    "clicked": count_clicked,
+                    "total_clicks": total_clicks,
                 },
                 "rates": {
                     "acceptance_rate_pct": acceptance_rate,
                     "delivery_rate_pct": delivery_rate,
                     "total_attempts": total_attempts,
                     "total_accepted_ever": total_accepted_ever,
+                    "click_rate_pct": round((count_clicked / total_requests) * 100, 2) if total_requests else 0.0,
                 },
                 "latency_seconds": {
                     "sample_size": len(latencies),

@@ -407,6 +407,22 @@ class TestAutoRefreshRetry(BaseZaloTestCase):
         success = zalo_svc._refresh_app_with_retry("ord", max_retries=1, backoffs=[])
         self.assertTrue(success)
 
+    @patch("services.zalo_zns._refresh_app_with_retry")
+    def test_auto_refresh_startup_preserves_healthy_token_chain(self, mock_refresh):
+        """A process restart must not rotate healthy access/refresh tokens immediately."""
+        healthy = {
+            "access_token": "healthy_access",
+            "refresh_token": "healthy_refresh",
+            "expires_at": time.time() + 90000,
+        }
+        self._write_token_file("ord", healthy)
+        self._write_token_file("bon", healthy)
+
+        with patch.object(zalo_svc._stop_event, "wait", return_value=True):
+            zalo_svc._auto_refresh_loop(initial_wait=0, interval=1)
+
+        mock_refresh.assert_not_called()
+
     def test_start_and_stop_auto_refresh(self):
         """start_auto_refresh and stop_auto_refresh lifecycle test."""
         zalo_svc.start_auto_refresh()
@@ -495,6 +511,27 @@ class TestZNSFunctions(BaseZaloTestCase):
         call_args = mock_post.call_args
         self.assertEqual(call_args[1]["headers"]["access_token"], "bon_valid_access_token")
         self.assertEqual(call_args[1]["json"]["template_data"]["customer_name"], "Tran Thi B")
+
+    @patch("services.zalo_zns.requests.get")
+    def test_get_zns_status_uses_cached_app_token(self, mock_get):
+        now = time.time()
+        self._write_token_file("ord", {
+            "access_token": "ord_cached_access",
+            "refresh_token": "ord_refresh_unchanged",
+            "expires_at": now + 7200,
+        })
+        response = MagicMock()
+        response.json.return_value = {"error": 0, "data": {"status": 1, "delivery_time": "1788431419886"}}
+        mock_get.return_value = response
+
+        result = zalo_svc.get_zns_status("zalo-msg-1", "ord")
+
+        self.assertEqual(result["data"]["status"], 1)
+        kwargs = mock_get.call_args.kwargs
+        self.assertEqual(kwargs["headers"]["access_token"], "ord_cached_access")
+        self.assertEqual(kwargs["params"], {"message_id": "zalo-msg-1"})
+        saved = zalo_svc._load_tokens("ord")
+        self.assertEqual(saved["refresh_token"], "ord_refresh_unchanged")
 
     def test_send_zns_invalid_template(self):
         """send_zns raises ValueError for unknown template."""
@@ -895,13 +932,16 @@ class TestFlaskEndpointsIntegration(unittest.TestCase):
         from app import app
         self.orig_allow_dev = Config.ZNS_ALLOW_INSECURE_DEV
         self.orig_inbound_auth = Config.ZNS_INBOUND_AUTH_REQUIRED
+        self.orig_env = Config.ENVIRONMENT
         Config.ZNS_ALLOW_INSECURE_DEV = True
         Config.ZNS_INBOUND_AUTH_REQUIRED = False
+        Config.ENVIRONMENT = "test"
         self.client = app.test_client()
 
     def tearDown(self):
         Config.ZNS_ALLOW_INSECURE_DEV = self.orig_allow_dev
         Config.ZNS_INBOUND_AUTH_REQUIRED = self.orig_inbound_auth
+        Config.ENVIRONMENT = self.orig_env
 
     def test_health_endpoint(self):
         resp = self.client.get("/health")

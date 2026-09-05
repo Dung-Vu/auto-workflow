@@ -15,6 +15,7 @@ Features:
 import html
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -59,6 +60,26 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _odoo_utc_now() -> str:
+    """Return a UTC timestamp in the naive format accepted by Odoo Datetime fields."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_order_date_for_zns(value: Any) -> str:
+    """Convert Odoo date/datetime values to the DD/MM/YYYY format expected by ZNS templates."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return text
+    return parsed.strftime("%d/%m/%Y")
+
+
 class ZNSOdooPoller:
     """Poller worker querying pending ZNS requests on Odoo 19 Online via JSON-RPC."""
 
@@ -73,6 +94,160 @@ class ZNSOdooPoller:
         self.odoo_client = odoo_client or get_zns_odoo_client()
         self.repo = repo or get_repository()
         self.worker_id = worker_id or f"poller-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _desired_external_templates(rec: Dict[str, Any]) -> List[str]:
+        """Translate existing Studio fields into ZNS intents without Odoo-side code."""
+        if rec.get("state") != "sale" or rec.get("x_studio_selection_field_q4_1imrcsjj8") != "Done":
+            return []
+        brand = str(rec.get("x_studio_thng_hiu") or "").strip().upper()
+        templates: List[str] = []
+        if brand == "ORDINAIRE":
+            instruction = str(rec.get("x_studio_hng_dn_s_dng") or "").strip()
+            if instruction == "Đã gửi (Vie)":
+                templates.append("hdsd-vie")
+            elif instruction == "Đã gửi (Eng)":
+                templates.append("hdsd-eng")
+            if rec.get("x_studio_zns_nh_gi_n_hng") is True:
+                templates.append("rating-ord-vie")
+            if rec.get("x_studio_zns_nh_gi_n_hng_eng") is True:
+                templates.append("rating-ord-eng")
+        elif brand == "BONARIO" and rec.get("x_studio_zns_nh_gi_n_hng") is True:
+            templates.append("rating")
+        return templates
+
+    @staticmethod
+    def _load_external_state() -> Optional[Dict[str, Any]]:
+        path = Config.ZNS_EXTERNAL_AUTOMATION_STATE_PATH
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else None
+        except Exception as exc:
+            logger.error(f"[ZNS-EXTERNAL-AUTOMATION] Invalid state file; failing closed: {exc}")
+            return {"initialized": False, "error": "invalid_state"}
+
+    @staticmethod
+    def _save_external_state(state: Dict[str, Any]) -> None:
+        path = Config.ZNS_EXTERNAL_AUTOMATION_STATE_PATH
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        temp_path = f"{path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+
+    def _queue_external_request(self, rec: Dict[str, Any], template_type: str) -> bool:
+        """Create one Odoo queue request via JSON-RPC; executes no Python inside Odoo."""
+        rec_id = int(rec["id"])
+        current_count = int(rec.get("x_studio_zns_send_count") or 0)
+        send_version = current_count + 1
+        marker = f"zns_external_request_{rec_id}_{template_type}_v{send_version}"
+        labels = {
+            "hdsd-vie": "HDSD Tiếng Việt (ORD)", "hdsd-eng": "HDSD Tiếng Anh (ORD)",
+            "rating-ord-vie": "Đánh giá Đơn hàng TV (ORD)",
+            "rating-ord-eng": "Đánh giá Đơn hàng TA (ORD)", "rating": "Đánh giá Dịch vụ (BON)",
+        }
+        actor = rec.get("write_uid") or [0, "Tự động ngoài Odoo"]
+        actor_id = int(actor[0]) if isinstance(actor, (list, tuple)) and actor else 0
+        actor_name = str(actor[1]) if isinstance(actor, (list, tuple)) and len(actor) > 1 else "Tự động ngoài Odoo"
+        partner = rec.get("partner_id") or [0, "Quý Khách"]
+        customer_name = str(partner[1]) if isinstance(partner, (list, tuple)) and len(partner) > 1 else "Quý Khách"
+        body = (
+            '<div style="border-left:4px solid #17a2b8;padding-left:10px;margin:5px 0;">'
+            f'<!-- {marker} --><p>📨 <b>YÊU CẦU GỬI ZALO ZNS: {html.escape(labels[template_type])} '
+            f'(Lần {send_version})</b></p><ul style="margin:0;padding-left:20px;">'
+            f'<li><b>Người thực hiện:</b> {html.escape(actor_name)}</li>'
+            f'<li><b>Người nhận:</b> {html.escape(customer_name)}</li>'
+            f'<li><b>Mã đơn hàng:</b> {html.escape(str(rec.get("name") or rec_id))}</li>'
+            '<li><b>Trạng thái:</b> Đã ghi nhận vào hàng đợi gửi tin (Chờ xử lý).</li></ul></div>'
+        )
+        existing = self.odoo_client.search_read(
+            "mail.message",
+            [("model", "=", "sale.order"), ("res_id", "=", rec_id), ("body", "ilike", marker)],
+            ["id"], limit=1,
+        )
+        if not existing:
+            self.odoo_client.message_post(
+                model="sale.order", record_id=rec_id, body=body,
+                message_type="comment", subtype_xmlid="mail.mt_note",
+            )
+        # Odoo Online escapes HTML passed as a plain JSON-RPC string and may not
+        # return a usable message ID. Resolve the durable marker and rewrite only
+        # our trusted markup (all dynamic values above are escaped).
+        posted_notes = self.odoo_client.search_read(
+            "mail.message",
+            [("model", "=", "sale.order"), ("res_id", "=", rec_id), ("body", "ilike", marker)],
+            ["id"], limit=1, order="id desc",
+        )
+        if not posted_notes:
+            raise RuntimeError(f"Could not locate created ZNS queue note marker {marker}")
+        self.odoo_client.write("mail.message", [int(posted_notes[0]["id"])], {"body": body})
+
+        values = {
+            "x_studio_zns_send_count": send_version,
+            "x_studio_zns_request_state": "pending",
+            "x_studio_zns_status": "queued",
+            "x_studio_zns_last_template": template_type,
+            "x_studio_zns_claim_token": False,
+            "x_studio_zns_claim_owner": False,
+            "x_studio_zns_processing_started_at": False,
+            "x_studio_zns_sent_by_user_id": actor_id,
+            "x_studio_zns_sent_by_user_name": actor_name,
+        }
+        return bool(self.odoo_client.write("sale.order", [rec_id], values))
+
+    def discover_external_automation_requests(self) -> int:
+        """Detect newly-added ZNS intents. First run snapshots and never backfills."""
+        if not Config.ZNS_EXTERNAL_AUTOMATION_ENABLED or not self.odoo_client.is_configured:
+            return 0
+        fields = [
+            "id", "name", "state", "write_date", "write_uid", "partner_id",
+            "x_studio_selection_field_q4_1imrcsjj8", "x_studio_thng_hiu", "x_studio_hng_dn_s_dng",
+            "x_studio_zns_nh_gi_n_hng", "x_studio_zns_nh_gi_n_hng_eng",
+            "x_studio_zns_request_state", "x_studio_zns_send_count",
+        ]
+        state = self._load_external_state()
+        now_cursor = _odoo_utc_now()
+        if state is None:
+            records = self.odoo_client.search_read(
+                "sale.order", [("state", "=", "sale"), ("x_studio_selection_field_q4_1imrcsjj8", "=", "Done")],
+                fields, limit=10000,
+            )
+            snapshot = {str(rec["id"]): self._desired_external_templates(rec) for rec in records}
+            self._save_external_state({"initialized": True, "cursor": now_cursor, "signals": snapshot})
+            logger.info(f"[ZNS-EXTERNAL-AUTOMATION] Bootstrapped {len(snapshot)} records without sending history")
+            return 0
+        if not state.get("initialized"):
+            return 0
+
+        cursor = str(state.get("cursor") or now_cursor)
+        records = self.odoo_client.search_read(
+            "sale.order", [("write_date", ">=", cursor)], fields, limit=500, order="write_date asc,id asc",
+        )
+        signals = state.setdefault("signals", {})
+        queued = 0
+        for rec in records:
+            key = str(rec["id"])
+            desired = self._desired_external_templates(rec)
+            previous = list(signals.get(key) or [])
+            added = [item for item in desired if item not in previous]
+            if added and rec.get("x_studio_zns_request_state") not in ("pending", "processing"):
+                template_type = added[0]
+                existing, _ = self.repo.query_messages(
+                    filters={"source_model": "sale.order", "source_record_id": int(rec["id"]), "template_type": template_type},
+                    page=1, page_size=1,
+                )
+                if existing or self._queue_external_request(rec, template_type):
+                    previous.append(template_type)
+                    queued += 0 if existing else 1
+            signals[key] = [item for item in previous if item in desired]
+        state["cursor"] = now_cursor
+        self._save_external_state(state)
+        return queued
 
     @staticmethod
     def _record_matches_domain(rec: Dict[str, Any], extra_domain: List[Any]) -> bool:
@@ -144,6 +319,68 @@ class ZNSOdooPoller:
         res = self.odoo_client.write(model, ids, values)
         return res is True or res is None or bool(res)
 
+    def _update_request_chatter_status(
+        self,
+        model: str,
+        rec_id: int,
+        send_version: int,
+        backend_status: str,
+        zalo_msg_id: Optional[str] = None,
+    ) -> bool:
+        """Update the matching queue note in place after the gateway responds."""
+        try:
+            notes = self.odoo_client.search_read(
+                "mail.message",
+                [
+                    ("model", "=", model),
+                    ("res_id", "=", int(rec_id)),
+                    ("body", "ilike", "YÊU CẦU GỬI ZALO ZNS"),
+                    ("body", "ilike", f"(Lần {int(send_version)})"),
+                ],
+                ["id", "body"],
+                limit=5,
+                order="id desc",
+            )
+            if not isinstance(notes, list) or not notes:
+                logger.warning(
+                    f"[ZNS-ODOO-POLLER] Queue chatter note not found for {model}({rec_id}) v{send_version}"
+                )
+                return False
+
+            status = str(backend_status or "").strip().upper()
+            status_text = {
+                "ACCEPTED": "✅ Zalo đã tiếp nhận tin nhắn (ACCEPTED).",
+                "DELIVERED": "✅ Tin nhắn đã được giao thành công (DELIVERED).",
+                "REJECTED": "❌ Zalo từ chối tin nhắn (REJECTED).",
+                "SUBMISSION_UNKNOWN": "⚠️ Chưa xác định được kết quả gửi.",
+                "DELIVERY_UNKNOWN": "⚠️ Chưa xác định được trạng thái giao tin.",
+                "CANCELLED": "❌ Yêu cầu gửi đã bị hủy.",
+            }.get(status, f"Trạng thái xử lý: {html.escape(status or 'UNKNOWN')}.")
+            if zalo_msg_id:
+                status_text += " <b>Zalo Msg ID:</b> %s" % html.escape(str(zalo_msg_id))
+            replacement = "<li><b>Trạng thái:</b> %s</li>" % status_text
+
+            for note in notes:
+                body = str(note.get("body") or "")
+                start = body.find("<li><b>Trạng thái:</b>")
+                end = body.find("</li>", start)
+                if start < 0 or end < 0:
+                    continue
+                updated_body = body[:start] + replacement + body[end + len("</li>") :]
+                if updated_body == body:
+                    return True
+                return bool(self.odoo_client.write("mail.message", [int(note["id"])], {"body": updated_body}))
+
+            logger.warning(
+                f"[ZNS-ODOO-POLLER] Queue chatter status row not found for {model}({rec_id}) v{send_version}"
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                f"[ZNS-ODOO-POLLER] Could not update queue chatter for {model}({rec_id}) v{send_version}: {e}"
+            )
+            return False
+
     def _writeback_completed_to_odoo(
         self,
         model: str,
@@ -166,6 +403,7 @@ class ZNSOdooPoller:
             write_vals = {
                 "x_studio_zns_request_state": "completed",
                 "x_studio_zns_status": odoo_status,
+                "x_studio_zns_last_sent_at": _odoo_utc_now(),
                 "x_studio_zns_claim_token": False,
                 "x_studio_zns_claim_owner": False,
                 "x_studio_zns_processing_started_at": False,
@@ -230,6 +468,16 @@ class ZNSOdooPoller:
                 if our_msg:
                     restore_domain.append(("x_studio_zns_msg_id", "=", our_msg))
                 self._cas_write(model, rec_id, restore_vals, extra_domain=restore_domain)
+                return True
+
+            if curr_count == int(send_version):
+                self._update_request_chatter_status(
+                    model,
+                    rec_id,
+                    send_version,
+                    backend_status,
+                    zalo_msg_id=zalo_msg_id,
+                )
 
             return True
         except Exception as e:
@@ -404,6 +652,8 @@ class ZNSOdooPoller:
                 "x_studio_tn_khch_hng",
                 "x_studio_zns_last_template",
                 "x_studio_zns_send_count",
+                "x_studio_zns_sent_by_user_id",
+                "x_studio_zns_sent_by_user_name",
                 "date_order",
                 "company_id",
             ]
@@ -457,7 +707,7 @@ class ZNSOdooPoller:
                         "x_studio_zns_request_state": "processing",
                         "x_studio_zns_claim_token": unique_token,
                         "x_studio_zns_claim_owner": self.worker_id,
-                        "x_studio_zns_processing_started_at": _utc_now_iso(),
+                        "x_studio_zns_processing_started_at": _odoo_utc_now(),
                     })
                     if not write_ok:
                         logger.warning(
@@ -507,7 +757,7 @@ class ZNSOdooPoller:
                     customer_name = rec["partner_id"][1]
 
                 order_code = rec.get("name") or str(rec_id)
-                date_order = rec.get("date_order") or ""
+                date_order = _format_order_date_for_zns(rec.get("date_order"))
                 company_id = rec["company_id"][0] if rec.get("company_id") and isinstance(rec["company_id"], (list, tuple)) else None
 
                 # 4. Dispatch ZNS via tracking service with stable idempotency key
@@ -527,6 +777,8 @@ class ZNSOdooPoller:
                         source="odoo",
                         source_model=model,
                         source_record_id=rec_id,
+                        sent_by_user_id=rec.get("x_studio_zns_sent_by_user_id"),
+                        sent_by_user_name=rec.get("x_studio_zns_sent_by_user_name"),
                         company_id=company_id,
                     )
                     if not lease_owned:
@@ -615,6 +867,7 @@ def _poller_loop(interval: float = 10.0):
 
     while not _poller_stop.is_set():
         try:
+            poller.discover_external_automation_requests()
             poller.poll_and_dispatch(model="sale.order", limit=20)
         except Exception as e:
             logger.error(f"[ZNS-ODOO-POLLER] Unhandled exception in poller loop: {e}")

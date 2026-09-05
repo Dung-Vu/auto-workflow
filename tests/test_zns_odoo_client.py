@@ -32,6 +32,8 @@ class TestZNSOdooJSONRPCClient(unittest.TestCase):
 
     def setUp(self):
         reset_zns_odoo_client()
+        self.orig_odoo_uid = Config.ODOO_UID
+        Config.ODOO_UID = None
         self.mock_session = MagicMock()
         self.client = ZNSOdooJSONRPCClient(
             url="https://test.odoo.com",
@@ -41,6 +43,9 @@ class TestZNSOdooJSONRPCClient(unittest.TestCase):
             uid=2,
             session=self.mock_session,
         )
+
+    def tearDown(self):
+        Config.ODOO_UID = self.orig_odoo_uid
 
     def test_jsonrpc_search_read_success(self):
         """Verify search_read formats JSON-RPC 2.0 call and parses results."""
@@ -253,6 +258,16 @@ class TestZNSOdooJSONRPCClient(unittest.TestCase):
 
         with self.assertRaises(OdooJSONRPCError):
             empty_client.search_read("sale.order", [])
+
+
+class TestZNSOdooPollerFormatting(unittest.TestCase):
+    def test_odoo_datetime_is_formatted_for_zns_template(self):
+        from services.zns_odoo_poller import _format_order_date_for_zns
+
+        self.assertEqual(_format_order_date_for_zns("2026-09-03 09:11:43"), "03/09/2026")
+        self.assertEqual(_format_order_date_for_zns("2026-09-03T09:11:43+00:00"), "03/09/2026")
+        self.assertEqual(_format_order_date_for_zns("2026-09-03"), "03/09/2026")
+        self.assertEqual(_format_order_date_for_zns(False), "")
 
 
 if __name__ == "__main__":

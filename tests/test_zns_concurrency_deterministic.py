@@ -606,7 +606,7 @@ class TestDeterministicConcurrency(unittest.TestCase):
     def test_true_multiprocessing_migration_from_schema_v1(self):
         """
         Verify real OS processes (multiprocessing.Process) migrating concurrently
-        from schema v1 to v4 all exit with code 0, without lock conflicts or duplicates.
+        from schema v1 to the latest version all exit with code 0, without lock conflicts or duplicates.
         """
         import multiprocessing
 
@@ -665,7 +665,7 @@ class TestDeterministicConcurrency(unittest.TestCase):
         conn_check = sqlite3.connect(mp_db_path)
         try:
             versions = [r[0] for r in conn_check.execute("SELECT version FROM schema_migrations ORDER BY version ASC;").fetchall()]
-            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
+            self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
             temp_tables = conn_check.execute("SELECT name FROM sqlite_master WHERE name LIKE '%_v2';").fetchall()
             self.assertEqual(len(temp_tables), 0)
         finally:
@@ -768,6 +768,8 @@ class TestDeterministicConcurrency(unittest.TestCase):
             "x_studio_tn_khch_hng": "Customer 777",
             "x_studio_zns_last_template": "hdsd-vie",
             "x_studio_zns_send_count": 1,
+            "x_studio_zns_sent_by_user_id": 208,
+            "x_studio_zns_sent_by_user_name": "Vũ Đình Dũng",
             "date_order": "2026-08-28",
             "company_id": [1, "Ordinaire"],
             "x_studio_zns_request_state": "pending",
@@ -799,6 +801,10 @@ class TestDeterministicConcurrency(unittest.TestCase):
         dispatched_a = poller_a.poll_and_dispatch(model="sale.order", limit=10)
         self.assertEqual(dispatched_a, 1)
         self.assertEqual(mock_tracking.dispatch_zns.call_count, 1)
+        dispatch_kwargs = mock_tracking.dispatch_zns.call_args.kwargs
+        self.assertEqual(dispatch_kwargs["sent_by_user_id"], 208)
+        self.assertEqual(dispatch_kwargs["sent_by_user_name"], "Vũ Đình Dũng")
+        self.assertEqual(dispatch_kwargs["order_date"], "28/08/2026")
 
         # Step 2: Poller B polls using stale snapshot (where search_read still returned SO777 pending)
         # Poller B must detect that SO777 v1 is already COMPLETED in SQLite, writeback to Odoo, and NOT dispatch!
@@ -896,14 +902,70 @@ class TestDeterministicConcurrency(unittest.TestCase):
         unauthorized_renew = self.repo.renew_outbox_lease(task_id, worker_id="imposter-worker", lease_duration_seconds=120)
         self.assertFalse(unauthorized_renew)
 
-    # 20. Outbox Lost Response: side effect succeeded, client timed out
-    def test_outbox_lost_response_idempotent_chatter(self):
-        """
-        Simulate a successful Odoo message_post side effect whose JSON-RPC response
-        is lost (client timeout). The next worker must discover the event marker
-        and must not post a duplicate chatter note.
-        """
-        from services.zns_odoo_client import OdooJSONRPCError
+    def test_external_automation_bootstrap_does_not_backfill_and_new_signal_queues(self):
+        """External detector snapshots existing orders, then queues only later transitions."""
+        from services.zns_odoo_poller import ZNSOdooPoller
+
+        rec = {
+            "id": 9901, "name": "SO-EXT-1", "state": "sale", "write_date": "2026-09-04 00:00:01",
+            "write_uid": [208, "CS User"], "partner_id": [1, "Customer"],
+            "x_studio_selection_field_q4_1imrcsjj8": "Done",
+            "x_studio_thng_hiu": "ORDINAIRE", "x_studio_hng_dn_s_dng": "Đã gửi (Vie)",
+            "x_studio_zns_nh_gi_n_hng": False, "x_studio_zns_nh_gi_n_hng_eng": False,
+            "x_studio_zns_request_state": "completed", "x_studio_zns_send_count": 0,
+        }
+        mock_odoo = MagicMock()
+        mock_odoo.is_configured = True
+        mock_odoo.search_read.side_effect = [[rec], []]
+        poller = ZNSOdooPoller(odoo_client=mock_odoo, repo=self.repo)
+        state_path = os.path.join(self.temp_dir.name, "external_state.json")
+        old_enabled = Config.ZNS_EXTERNAL_AUTOMATION_ENABLED
+        old_path = Config.ZNS_EXTERNAL_AUTOMATION_STATE_PATH
+        Config.ZNS_EXTERNAL_AUTOMATION_ENABLED = True
+        Config.ZNS_EXTERNAL_AUTOMATION_STATE_PATH = state_path
+        try:
+            self.assertEqual(poller.discover_external_automation_requests(), 0)
+            mock_odoo.write.assert_not_called()
+            with open(state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+            self.assertEqual(state["signals"]["9901"], ["hdsd-vie"])
+
+            # A later transition adds the English rating signal.
+            changed = dict(rec)
+            changed["x_studio_zns_nh_gi_n_hng_eng"] = True
+            mock_odoo.search_read.side_effect = [[changed]]
+            with patch.object(poller, "_queue_external_request", return_value=True) as queue_spy:
+                self.assertEqual(poller.discover_external_automation_requests(), 1)
+            queue_spy.assert_called_once_with(changed, "rating-ord-eng")
+        finally:
+            Config.ZNS_EXTERNAL_AUTOMATION_ENABLED = old_enabled
+            Config.ZNS_EXTERNAL_AUTOMATION_STATE_PATH = old_path
+
+    def test_external_queue_rewrites_escaped_odoo_chatter_by_marker(self):
+        """Odoo message_post return shape is irrelevant; marker lookup fixes escaped HTML."""
+        from services.zns_odoo_poller import ZNSOdooPoller
+
+        rec = {
+            "id": 9902, "name": "SO-EXT-HTML", "write_uid": [208, "CS User"],
+            "partner_id": [1, "Customer"], "x_studio_zns_send_count": 0,
+        }
+        mock_odoo = MagicMock()
+        mock_odoo.is_configured = True
+        mock_odoo.search_read.side_effect = [[], [{"id": 88002}]]
+        mock_odoo.message_post.return_value = True
+        mock_odoo.write.return_value = True
+        poller = ZNSOdooPoller(odoo_client=mock_odoo, repo=self.repo)
+
+        self.assertTrue(poller._queue_external_request(rec, "rating-ord-vie"))
+        mock_odoo.message_post.assert_called_once()
+        mail_writes = [call for call in mock_odoo.write.call_args_list if call.args[0] == "mail.message"]
+        self.assertEqual(len(mail_writes), 1)
+        self.assertIn("<div", mail_writes[0].args[2]["body"])
+        self.assertIn("zns_external_request_9902_rating-ord-vie_v1", mail_writes[0].args[2]["body"])
+
+    # 20. Delivery updates the original request note and never posts a second note
+    def test_outbox_updates_original_chatter_without_posting(self):
+        """Delivery retries only update the existing queue note in place."""
         from services.zns_tracking import ZNSOdooOutboxWorker
 
         created = self.repo.create_message({
@@ -926,25 +988,25 @@ class TestDeterministicConcurrency(unittest.TestCase):
             event_type="DELIVERY_CONFIRMED",
         )
 
-        posted_bodies = []
+        queue_body = [
+            "<div><p><b>YÊU CẦU GỬI ZALO ZNS</b> (Lần 1)</p>"
+            "<ul><li><b>Trạng thái:</b> ⏳ Chờ xử lý</li></ul></div>"
+        ]
 
         def write_ok(model, ids, vals, **kwargs):
+            if model == "mail.message" and vals.get("body"):
+                queue_body[0] = vals["body"]
             return True
 
         def search_read_mail(model, domain, fields=None, limit=0, order=None, **kwargs):
-            if model == "mail.message" and posted_bodies:
-                return [{"id": 999111, "body": posted_bodies[-1]}]
+            if model == "mail.message":
+                return [{"id": 999111, "body": queue_body[0]}]
             return []
-
-        def message_post_timeout(**kwargs):
-            posted_bodies.append(kwargs.get("body") or "")
-            raise OdooJSONRPCError("Odoo transport failure: timed out")
 
         mock_odoo = MagicMock()
         mock_odoo.is_configured = True
         mock_odoo.write.side_effect = write_ok
         mock_odoo.search_read.side_effect = search_read_mail
-        mock_odoo.message_post.side_effect = message_post_timeout
 
         worker1 = ZNSOdooOutboxWorker(repo=self.repo)
 
@@ -956,13 +1018,10 @@ class TestDeterministicConcurrency(unittest.TestCase):
             Config.ODOO_URL = "https://test.odoo.com"
             Config.ODOO_DB = "test_db"
             Config.ODOO_API_KEY = "test_key"
-            # Side effect lands, JSON-RPC response is lost. No worker_id heartbeat:
-            # the in-flight call started under a valid lease that has since expired.
             ok, err = worker1._sync_task_to_odoo(tasks_w1[0])
-            self.assertFalse(ok)
-            self.assertIn("timed out", err or "")
-            self.assertEqual(mock_odoo.message_post.call_count, 1)
-            self.assertEqual(len(posted_bodies), 1)
+            self.assertTrue(ok, err)
+            self.assertIn("DELIVERED", queue_body[0])
+            mock_odoo.message_post.assert_not_called()
 
             tasks_w2 = self.repo.claim_outbox_tasks(worker_id="w2", batch_size=1, lease_duration_seconds=60)
             self.assertEqual(len(tasks_w2), 1)
@@ -972,8 +1031,7 @@ class TestDeterministicConcurrency(unittest.TestCase):
 
             ok2, err2 = worker1._sync_task_to_odoo(tasks_w2[0], worker_id="w2")
             self.assertTrue(ok2, err2)
-
-            self.assertEqual(mock_odoo.message_post.call_count, 1)
+            mock_odoo.message_post.assert_not_called()
 
             completed_w2 = self.repo.complete_outbox_task(task_id, worker_id="w2", success=True)
             self.assertTrue(completed_w2)
@@ -1017,11 +1075,11 @@ class TestDeterministicConcurrency(unittest.TestCase):
             ok, err = worker._sync_task_to_odoo(tasks[0], worker_id="w-fail-closed")
 
         self.assertFalse(ok)
-        self.assertIn("chatter marker lookup failed", err or "")
+        self.assertIn("original queue chatter update failed", err or "")
         mock_odoo.message_post.assert_not_called()
 
     def test_outbox_sync_heartbeats_around_each_external_call(self):
-        """Lease must be renewed around write / marker lookup / message_post, not once per task."""
+        """Lease is renewed around the Odoo field write and task completion."""
         from services.zns_tracking import ZNSOdooOutboxWorker
 
         created = self.repo.create_message({
@@ -1045,8 +1103,10 @@ class TestDeterministicConcurrency(unittest.TestCase):
         mock_odoo = MagicMock()
         mock_odoo.is_configured = True
         mock_odoo.write.return_value = True
-        mock_odoo.search_read.return_value = []
-        mock_odoo.message_post.return_value = 4242
+        mock_odoo.search_read.return_value = [{
+            "id": 89001,
+            "body": "<div><b>YÊU CẦU GỬI ZALO ZNS</b> (Lần 1)<li><b>Trạng thái:</b> ⏳ Chờ xử lý</li></div>",
+        }]
 
         worker = ZNSOdooOutboxWorker(repo=self.repo)
         with patch("services.zns_odoo_client.get_zns_odoo_client", return_value=mock_odoo):
@@ -1057,7 +1117,7 @@ class TestDeterministicConcurrency(unittest.TestCase):
                 processed = worker.process_pending_tasks(worker_id="hb-multi", limit=1)
 
         self.assertEqual(processed, 1)
-        self.assertGreaterEqual(spy.call_count, 4)
+        self.assertGreaterEqual(spy.call_count, 3)
 
     # 21. Real WSGI Chunked Payload Limit (No Content-Length)
     def test_flask_wsgi_chunked_stream_payload_cap(self):
@@ -1358,6 +1418,56 @@ class TestDeterministicConcurrency(unittest.TestCase):
         self.assertEqual(rec["x_studio_zns_request_state"], "pending")
         self.assertEqual(rec["x_studio_zns_status"], "queued")
 
+    def test_chatter_queue_note_is_updated_to_gateway_result_in_place(self):
+        """ACCEPTED writeback replaces the stale queue status without posting a second note."""
+        from services.zns_odoo_poller import ZNSOdooPoller
+
+        mock_odoo = MagicMock()
+        mock_odoo.is_configured = True
+        mock_odoo.search_read.return_value = [{
+            "id": 4242,
+            "body": (
+                "<div><p>YÊU CẦU GỬI ZALO ZNS: HDSD (Lần 1)</p><ul>"
+                "<li><b>Trạng thái:</b> Đã ghi nhận vào hàng đợi gửi tin (Chờ xử lý).</li>"
+                "</ul></div>"
+            ),
+        }]
+        mock_odoo.write.return_value = True
+        poller = ZNSOdooPoller(odoo_client=mock_odoo, repo=self.repo)
+
+        ok = poller._update_request_chatter_status(
+            "sale.order", 5274, 1, "ACCEPTED", zalo_msg_id='<unsafe>42'
+        )
+
+        self.assertTrue(ok)
+        model, ids, values = mock_odoo.write.call_args.args
+        self.assertEqual((model, ids), ("mail.message", [4242]))
+        self.assertIn("Zalo đã tiếp nhận tin nhắn (ACCEPTED)", values["body"])
+        self.assertIn("&lt;unsafe&gt;42", values["body"])
+        self.assertNotIn("Chờ xử lý", values["body"])
+        mock_odoo.message_post.assert_not_called()
+
+    def test_chatter_result_update_is_idempotent(self):
+        """An already-updated queue note does not cause another Odoo write."""
+        from services.zns_odoo_poller import ZNSOdooPoller
+
+        mock_odoo = MagicMock()
+        mock_odoo.is_configured = True
+        mock_odoo.search_read.return_value = [{
+            "id": 4242,
+            "body": (
+                "<p>YÊU CẦU GỬI ZALO ZNS (Lần 1)</p>"
+                "<li><b>Trạng thái:</b> ✅ Zalo đã tiếp nhận tin nhắn (ACCEPTED). "
+                "<b>Zalo Msg ID:</b> msg-1</li>"
+            ),
+        }]
+        poller = ZNSOdooPoller(odoo_client=mock_odoo, repo=self.repo)
+
+        self.assertTrue(poller._update_request_chatter_status(
+            "sale.order", 5274, 1, "ACCEPTED", zalo_msg_id="msg-1"
+        ))
+        mock_odoo.write.assert_not_called()
+
     # 22. Hermetic subprocess startup: no inherited credentials, no daemons, Waitress socket probe
     def test_app_subprocess_docker_command_smoke_and_sigterm(self):
         """
@@ -1419,6 +1529,9 @@ class TestDeterministicConcurrency(unittest.TestCase):
             }
             if os.environ.get("PYTHONPATH"):
                 test_env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+            for win_var in ("SystemRoot", "SYSTEMROOT", "SystemDrive", "WINDIR", "ComSpec", "TEMP", "TMP"):
+                if os.environ.get(win_var):
+                    test_env[win_var] = os.environ[win_var]
 
             proc = subprocess.Popen(
                 [sys.executable, "app.py"],
@@ -1450,7 +1563,10 @@ class TestDeterministicConcurrency(unittest.TestCase):
 
                 proc.send_signal(signal.SIGTERM)
                 stdout, _ = proc.communicate(timeout=5.0)
-                self.assertEqual(proc.returncode, 0, f"Process exited with non-zero code! Output:\n{stdout}")
+                if os.name == "nt":
+                    self.assertIn(proc.returncode, (0, 1, 15), f"Process exited with unexpected code! Output:\n{stdout}")
+                else:
+                    self.assertEqual(proc.returncode, 0, f"Process exited with non-zero code! Output:\n{stdout}")
                 self.assertNotIn("ImportError", stdout)
                 self.assertIn("Background daemons disabled", stdout)
             except Exception:

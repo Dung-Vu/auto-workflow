@@ -341,15 +341,26 @@ def _auto_refresh_loop(initial_wait: int = 60, interval: int = AUTO_REFRESH_INTE
             _auto_refresh_running = False
             return
 
+    first_cycle = True
     while _auto_refresh_running and not _stop_event.is_set():
         for app_name in list(TOKEN_FILES.keys()):
             if _stop_event.is_set() or not _auto_refresh_running:
                 break
             try:
+                # A restart must not rotate a healthy refresh-token chain. The first
+                # cycle only repairs missing/expired access tokens; later 24-hour
+                # cycles deliberately refresh to keep the chain alive.
+                if first_cycle and _is_token_valid(_load_tokens(app_name)):
+                    logger.info(
+                        f"[AUTO-REFRESH] [{app_name.upper()}] cached token is healthy "
+                        "— skipping startup refresh"
+                    )
+                    continue
                 _refresh_app_with_retry(app_name)
             except Exception as e:
                 logger.error(f"[AUTO-REFRESH] Unexpected error processing [{app_name.upper()}]: {e}")
 
+        first_cycle = False
         if _stop_event.wait(timeout=interval):
             break
 
@@ -390,6 +401,7 @@ def send_zns(
     customer_name: str = "",
     tracking_id: str = None,
     mode: str = None,
+    extra_template_data: dict = None,
 ) -> dict:
     """
     Send a ZNS message via Zalo OpenAPI.
@@ -427,6 +439,8 @@ def send_zns(
     }
     if include_date:
         template_data["order_date"] = order_date
+    if extra_template_data:
+        template_data.update({str(k): str(v) for k, v in extra_template_data.items()})
 
     payload = {
         "phone": phone,
@@ -461,6 +475,24 @@ def send_zns(
     logger.info(f"ZNS sent [{template_type}→{app.upper()}] to {mask_phone(phone)}: {result}")
     return result
 
+
+
+def get_zns_status(message_id: str, app: str = "ord") -> dict:
+    """Read Zalo's authoritative delivery status without refreshing a healthy token."""
+    if not message_id:
+        raise ValueError("message_id is required")
+    app_key = app if app in APP_CREDENTIALS else "ord"
+    access_token = get_access_token(app_key)
+    response = requests.get(
+        "https://business.openapi.zalo.me/message/status",
+        headers={"Content-Type": "application/json", "access_token": access_token},
+        params={"message_id": str(message_id)},
+        timeout=15,
+    )
+    try:
+        return response.json()
+    except Exception as exc:
+        raise ValueError(f"ZNS status API returned non-JSON response (HTTP {response.status_code})") from exc
 
 
 def handle_authorization_callback(code: str, code_verifier: str = None, app: str = "ord") -> dict:

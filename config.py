@@ -246,7 +246,35 @@ class Config:
     ZNS_DELIVERY_SLA_SECONDS = int(os.getenv("ZNS_DELIVERY_SLA_SECONDS", "1800"))  # 30 mins
     ZNS_RECONCILIATION_ENABLED = os.getenv("ZNS_RECONCILIATION_ENABLED", "true").lower() == "true"
     ZNS_DISABLE_BACKGROUND_DAEMONS = os.getenv("ZNS_DISABLE_BACKGROUND_DAEMONS", "false").lower() in ("1", "true", "yes")
-    ZNS_RECONCILIATION_INTERVAL = int(os.getenv("ZNS_RECONCILIATION_INTERVAL", "300"))  # 5 mins
+    ZNS_RECONCILIATION_INTERVAL = int(os.getenv("ZNS_RECONCILIATION_INTERVAL", "60"))
+    ZNS_STATUS_POLL_AFTER_SECONDS = int(os.getenv("ZNS_STATUS_POLL_AFTER_SECONDS", "20"))
+    # Never run Python code in Odoo automation rules. This external poller observes
+    # eligible Sales Order changes and creates the ZNS queue request over JSON-RPC.
+    ZNS_EXTERNAL_AUTOMATION_ENABLED = os.getenv("ZNS_EXTERNAL_AUTOMATION_ENABLED", "true").lower() == "true"
+    ZNS_EXTERNAL_AUTOMATION_STATE_PATH = os.getenv(
+        "ZNS_EXTERNAL_AUTOMATION_STATE_PATH",
+        os.path.join(ZNS_DATA_DIR, "zns_external_automation_state.json"),
+    )
+    # High-entropy capability used only by Odoo's built-in Send Webhook action.
+    # No Python code runs inside Odoo; the external poller remains the fallback.
+    ZNS_ODOO_WEBHOOK_TOKEN = os.getenv("ZNS_ODOO_WEBHOOK_TOKEN", "")
+
+    # Click tracking. A template is enabled only after its approved CTA contains
+    # https://workflow.bonstu.site/zns/c/<click_token> and exposes click_token as URL param.
+    ZNS_CLICK_SECRET = os.getenv("ZNS_CLICK_SECRET", ZNS_ADMIN_API_KEY)
+    ZNS_CLICK_BASE_URL = os.getenv("ZNS_CLICK_BASE_URL", "https://workflow.bonstu.site/zns/c")
+    ZNS_CLICK_PARAM_BY_TEMPLATE = {
+        item.split(":", 1)[0].strip(): item.split(":", 1)[1].strip()
+        for item in os.getenv("ZNS_CLICK_PARAM_BY_TEMPLATE", "").split(",")
+        if ":" in item and item.split(":", 1)[0].strip() and item.split(":", 1)[1].strip()
+    }
+    ZNS_CLICK_DESTINATIONS = {
+        "hdsd-vie": "https://ordinairevietnam.com/vi/pages/care-instruction-warranty",
+        "hdsd-eng": "https://ordinairevietnam.com/en/pages/care-instruction-warranty",
+        "rating-ord-vie": "https://oa.zalo.me/1688724749742012531",
+        "rating-ord-eng": "https://oa.zalo.me/1688724749742012531",
+        "rating": "https://oa.zalo.me/4162276493394084988",
+    }
     ZNS_WEBHOOK_REQUIRE_SIGNATURE = os.getenv("ZNS_WEBHOOK_REQUIRE_SIGNATURE", "true").lower() == "true"
     ZNS_WEBHOOK_TIMESTAMP_TOLERANCE = int(os.getenv("ZNS_WEBHOOK_TIMESTAMP_TOLERANCE", "300"))  # 5 mins
     ZNS_MAX_PAYLOAD_BYTES = int(os.getenv("ZNS_MAX_PAYLOAD_BYTES", "102400"))  # 100 KB

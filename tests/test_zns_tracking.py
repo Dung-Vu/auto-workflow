@@ -86,6 +86,8 @@ class BaseZNSTestCase(unittest.TestCase):
         self.orig_bon_oa_id = Config.ZALO_BON_OA_ID
         self.orig_sig_req = Config.ZNS_WEBHOOK_REQUIRE_SIGNATURE
         self.orig_ts_tol = Config.ZNS_WEBHOOK_TIMESTAMP_TOLERANCE
+        self.orig_max_payload = Config.ZNS_MAX_PAYLOAD_BYTES
+        self.orig_odoo_webhook_token = Config.ZNS_ODOO_WEBHOOK_TOKEN
 
         Config.ZNS_TRACKING_DB_PATH = self.db_path
         Config.ZNS_ADMIN_API_KEY = "test_admin_secret_key_123"
@@ -101,6 +103,8 @@ class BaseZNSTestCase(unittest.TestCase):
         Config.ZALO_BON_OA_ID = "bon_oa_test_id"
         Config.ZNS_WEBHOOK_REQUIRE_SIGNATURE = True
         Config.ZNS_WEBHOOK_TIMESTAMP_TOLERANCE = 300
+        Config.ZNS_MAX_PAYLOAD_BYTES = 100 * 1024
+        Config.ZNS_ODOO_WEBHOOK_TOKEN = "test-odoo-webhook-capability"
 
         self.repo = ZNSRepository(db_path=self.db_path)
         self.service = ZNSTrackingService(repo=self.repo)
@@ -125,6 +129,8 @@ class BaseZNSTestCase(unittest.TestCase):
         Config.ZALO_BON_OA_ID = self.orig_bon_oa_id
         Config.ZNS_WEBHOOK_REQUIRE_SIGNATURE = self.orig_sig_req
         Config.ZNS_WEBHOOK_TIMESTAMP_TOLERANCE = self.orig_ts_tol
+        Config.ZNS_MAX_PAYLOAD_BYTES = self.orig_max_payload
+        Config.ZNS_ODOO_WEBHOOK_TOKEN = self.orig_odoo_webhook_token
         self.temp_dir.cleanup()
 
 
@@ -1032,6 +1038,28 @@ class TestFlaskEndpointsZNSIntegration(BaseZNSTestCase):
         self.assertEqual(resp_auth.status_code, 200)
         self.assertEqual(mock_send_zns.call_count, 1)
 
+    def test_odoo_builtin_webhook_queues_without_odoo_python_code(self):
+        record = {
+            "id": 9911, "name": "SO-WEBHOOK-1", "state": "sale",
+            "write_uid": [208, "CS User"], "partner_id": [1, "Customer"],
+            "x_studio_selection_field_q4_1imrcsjj8": "Done",
+            "x_studio_thng_hiu": "ORDINAIRE", "x_studio_hng_dn_s_dng": "Đã gửi (Vie)",
+            "x_studio_zns_nh_gi_n_hng": False, "x_studio_zns_nh_gi_n_hng_eng": False,
+            "x_studio_zns_request_state": "completed", "x_studio_zns_send_count": 0,
+        }
+        mock_odoo = MagicMock()
+        mock_odoo.is_configured = True
+        mock_odoo.read.return_value = [record]
+        with patch("services.zns_odoo_client.get_zns_odoo_client", return_value=mock_odoo), \
+             patch("services.zns_odoo_poller.ZNSOdooPoller._queue_external_request", return_value=True) as queue:
+            unauthorized = self.client.post("/webhook/odoo-zns/wrong/hdsd-vie", json={"_id": 9911})
+            accepted = self.client.post(
+                "/webhook/odoo-zns/test-odoo-webhook-capability/hdsd-vie", json={"_id": 9911}
+            )
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(accepted.status_code, 202)
+        queue.assert_called_once()
+
     # Dashboard Basic Auth
     def test_dashboard_basic_auth(self):
         # 1. Without auth -> 401 with WWW-Authenticate header
@@ -1048,6 +1076,39 @@ class TestFlaskEndpointsZNSIntegration(BaseZNSTestCase):
             headers={"Authorization": f"Basic {creds}"},
         )
         self.assertEqual(resp_auth.status_code, 200)
+
+    def test_dashboard_filters_by_send_date_and_template(self):
+        for template_type, reference in [("hdsd-vie", "FILTER-KEEP"), ("rating", "FILTER-HIDE")]:
+            self.repo.create_message({
+                "tracking_id": f"trk_{reference.lower()}",
+                "app_key": "ord" if template_type != "rating" else "bon",
+                "template_type": template_type,
+                "template_id": "test-template",
+                "phone_masked": "+849****321",
+                "phone_hash": f"hash-{reference}",
+                "business_reference": reference,
+                "status": STATE_ACCEPTED,
+            })
+
+        import base64
+        creds = base64.b64encode(f"admin:{Config.ZNS_ADMIN_API_KEY}".encode("utf-8")).decode("utf-8")
+        with patch("routes.zns_routes.get_repository", return_value=self.repo):
+            resp = self.client.get(
+                "/zns/dashboard?template_type=hdsd-vie&from_date=2000-01-01&to_date=2999-12-31",
+                headers={"Authorization": f"Basic {creds}"},
+            )
+
+        body = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Ngày gửi từ", body)
+        self.assertIn("Ngày gửi đến", body)
+        self.assertIn("FILTER-KEEP", body)
+        self.assertNotIn("FILTER-HIDE", body)
+        self.assertIn('value="hdsd-vie" selected', body)
+        self.assertNotIn("Khách Đã Bấm Link", body)
+        self.assertNotIn("Tỷ Lệ Click", body)
+        self.assertNotIn("System Telemetry", body)
+        self.assertNotIn("Xuất CSV", body)
 
     # Payload too large
     def test_payload_too_large_rejected(self):

@@ -9,11 +9,12 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Dict, Optional
 
-from flask import Blueprint, jsonify, request, render_template_string, Response
+from flask import Blueprint, jsonify, request, render_template_string, Response, redirect
 
 from config import Config
 from services.zns_repository import get_repository
 from services.zns_tracking import ZNSTrackingService
+from services.zns_click_tracking import resolve_click, sync_first_click_to_odoo
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,109 @@ def zalo_delivery_webhook():
 
 
 # ═══════════════════════════════════════════
+#  ODOO BUILT-IN WEBHOOK → EXTERNAL AUTOMATION
+# ═══════════════════════════════════════════
+
+@zns_bp.route("/webhook/odoo-zns/<token>/<template_type>", methods=["POST"])
+def odoo_zns_builtin_webhook(token: str, template_type: str):
+    """Queue immediately from Odoo's no-code Send Webhook action."""
+    configured = Config.ZNS_ODOO_WEBHOOK_TOKEN
+    if not configured:
+        return jsonify({"status": "error", "message": "Odoo webhook is not configured"}), 503
+    if not hmac.compare_digest(str(token), str(configured)):
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+    if template_type not in Config.ZNS_TEMPLATES:
+        return jsonify({"status": "error", "message": "Unknown template"}), 404
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"status": "error", "message": "JSON object required"}), 400
+    record_id = payload.get("_id") or payload.get("id") or payload.get("record_id")
+    if isinstance(record_id, (list, tuple)) and record_id:
+        record_id = record_id[0]
+    try:
+        record_id = int(record_id)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "Missing sale.order record id"}), 400
+
+    from services.zns_odoo_client import get_zns_odoo_client
+    from services.zns_odoo_poller import ZNSOdooPoller
+    client = get_zns_odoo_client()
+    fields = [
+        "id", "name", "state", "write_date", "write_uid", "partner_id",
+        "x_studio_selection_field_q4_1imrcsjj8", "x_studio_thng_hiu", "x_studio_hng_dn_s_dng",
+        "x_studio_zns_nh_gi_n_hng", "x_studio_zns_nh_gi_n_hng_eng",
+        "x_studio_zns_request_state", "x_studio_zns_send_count",
+    ]
+    records = client.read("sale.order", [record_id], fields)
+    if not records:
+        return jsonify({"status": "error", "message": "Sales Order not found"}), 404
+    record = records[0]
+    poller = ZNSOdooPoller(odoo_client=client)
+    if template_type not in poller._desired_external_templates(record):
+        return jsonify({"status": "ignored", "message": "Record no longer matches ZNS conditions"}), 202
+    if record.get("x_studio_zns_request_state") in ("pending", "processing"):
+        return jsonify({"status": "duplicate", "message": "A ZNS request is already in progress"}), 202
+
+    existing, _ = poller.repo.query_messages(
+        filters={"source_model": "sale.order", "source_record_id": record_id, "template_type": template_type},
+        page=1, page_size=1,
+    )
+    if existing:
+        return jsonify({"status": "duplicate", "message": "Template already sent for this order"}), 200
+    if not poller._queue_external_request(record, template_type):
+        return jsonify({"status": "error", "message": "Unable to create external queue request"}), 502
+    # Dispatch in the webhook request for near-real-time behavior. If Odoo/Zalo is
+    # temporarily slow, the durable 10-second background poller retries safely.
+    try:
+        poller.poll_and_dispatch(model="sale.order", limit=20)
+    except Exception as exc:
+        logger.warning(f"Immediate Odoo webhook dispatch deferred to poller: {exc}")
+    return jsonify({"status": "queued", "record_id": record_id, "template_type": template_type}), 202
+
+
+# ═══════════════════════════════════════════
+#  SIGNED CTA CLICK TRACKING
+# ═══════════════════════════════════════════
+
+_CLICK_CONFIRM_HTML = """<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Đang mở liên kết…</title></head>
+<body><form id="go" method="post"><button type="submit">Tiếp tục mở liên kết</button></form>
+<script>document.getElementById('go').submit();</script></body></html>"""
+
+
+@zns_bp.route("/zns/c/<token>", methods=["GET", "POST"])
+def zns_click_redirect(token: str):
+    """Validate signed CTA capability, record a browser-confirmed click, then redirect."""
+    repo = get_repository()
+    message, destination = resolve_click(token, repo=repo)
+    if not message or not destination:
+        return Response("Liên kết không hợp lệ hoặc đã bị thu hồi.", 404)
+
+    if request.method == "GET":
+        response = Response(_CLICK_CONFIRM_HTML, 200, mimetype="text/html")
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+        return response
+
+    was_first = not bool(message.get("clicked_at"))
+    updated = repo.record_click(
+        message["id"],
+        metadata={
+            "user_agent": str(request.headers.get("User-Agent", ""))[:200],
+            "fetch_user": str(request.headers.get("Sec-Fetch-User", ""))[:20],
+        },
+    )
+    if not updated:
+        return Response("Không thể ghi nhận liên kết.", 404)
+    if was_first:
+        sync_first_click_to_odoo(updated)
+    return redirect(destination, code=303)
+
+
+# ═══════════════════════════════════════════
 #  AUTHENTICATED HISTORY & STATS APIS
 # ═══════════════════════════════════════════
 
@@ -461,6 +565,12 @@ _DASHBOARD_HTML = """
         .card { background: #fff; padding: 18px; border-radius: 8px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; color: #6c757d; margin-bottom: 8px; }
         .card-value { font-size: 24px; font-weight: 700; }
+        .filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; background: #fff; padding: 16px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; }
+        .filter-field { display: flex; flex-direction: column; gap: 5px; min-width: 180px; }
+        .filter-field label { font-size: 13px; font-weight: 600; color: #495057; }
+        .filter-field input, .filter-field select { padding: 9px 10px; border: 1px solid #ced4da; border-radius: 5px; background: #fff; font-size: 14px; }
+        .filter-button { padding: 10px 18px; border: 0; border-radius: 5px; background: var(--primary); color: #fff; font-weight: 600; cursor: pointer; text-decoration: none; }
+        .filter-reset { background: #6c757d; }
         .table-wrap { background: #fff; border-radius: 8px; border: 1px solid var(--border); overflow-x: auto; margin-bottom: 25px; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
         th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -481,6 +591,28 @@ _DASHBOARD_HTML = """
                 <p style="margin: 4px 0 0 0; color: #6c757d; font-size: 14px;">Hệ thống giám sát và đối soát tin nhắn Zalo Notification Service</p>
             </div>
         </div>
+
+        <form class="filters" method="get" action="{{ request.path }}">
+            <div class="filter-field">
+                <label for="from_date">Ngày gửi từ</label>
+                <input id="from_date" type="date" name="from_date" value="{{ selected.from_date }}">
+            </div>
+            <div class="filter-field">
+                <label for="to_date">Ngày gửi đến</label>
+                <input id="to_date" type="date" name="to_date" value="{{ selected.to_date }}">
+            </div>
+            <div class="filter-field">
+                <label for="template_type">Mẫu tin</label>
+                <select id="template_type" name="template_type">
+                    <option value="">Tất cả mẫu tin</option>
+                    {% for value, label in template_options %}
+                    <option value="{{ value }}" {% if selected.template_type == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button class="filter-button" type="submit">Lọc dữ liệu</button>
+            <a class="filter-button filter-reset" href="{{ request.path }}">Xóa lọc</a>
+        </form>
 
         <div class="grid">
             <div class="card">
@@ -550,6 +682,25 @@ def zns_dashboard_view():
     Render server-side HTML dashboard with metrics and recent messages table.
     """
     repo = get_repository()
-    stats = repo.query_statistics()
-    messages, _ = repo.query_messages(page=1, page_size=25)
-    return render_template_string(_DASHBOARD_HTML, stats=stats, messages=messages)
+    selected = {
+        "from_date": request.args.get("from_date", "").strip(),
+        "to_date": request.args.get("to_date", "").strip(),
+        "template_type": request.args.get("template_type", "").strip(),
+    }
+    filters = {key: value for key, value in selected.items() if value}
+    stats = repo.query_statistics(filters=filters)
+    messages, _ = repo.query_messages(filters=filters, page=1, page_size=100)
+    template_options = [
+        ("hdsd-vie", "Hướng dẫn sử dụng - Tiếng Việt"),
+        ("hdsd-eng", "Hướng dẫn sử dụng - Tiếng Anh"),
+        ("rating-ord-vie", "Đánh giá ORD - Tiếng Việt"),
+        ("rating-ord-eng", "Đánh giá ORD - Tiếng Anh"),
+        ("rating", "Đánh giá BON"),
+    ]
+    return render_template_string(
+        _DASHBOARD_HTML,
+        stats=stats,
+        messages=messages,
+        selected=selected,
+        template_options=template_options,
+    )

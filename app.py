@@ -79,6 +79,10 @@ from services.op_delivery_date import start_op_delivery_date_watcher, get_op_del
 from services.approval_doc_number import generate_doc_number, get_approval_doc_number_status, start_approval_doc_number_poller
 from services.follow_activity import start_follow_activity_watcher, get_follow_activity_status
 from services.return_activity import start_return_activity_watcher, get_return_activity_status
+from services.vendor_invoice_follow import (
+    start_vendor_invoice_follow_watcher,
+    get_vendor_invoice_follow_status,
+)
 from services.zns_odoo_poller import start_odoo_poller, stop_odoo_poller, get_odoo_poller_status
 
 
@@ -137,6 +141,7 @@ def health():
         "approval_doc_number": get_approval_doc_number_status(),
         "follow_activity": get_follow_activity_status(),
         "return_activity": get_return_activity_status(),
+        "vendor_invoice_follow": get_vendor_invoice_follow_status(),
         "lot_serial": lot_serial_status,
         "routes": [
             "/webhook/shopify/customer-create",
@@ -762,6 +767,9 @@ if __name__ == "__main__":
 
         # Start Return Activity watcher (activity on new stock.picking returns)
         start_return_activity_watcher()
+
+        # Start vendor invoice follow watcher (newly completed purchase receipts only)
+        start_vendor_invoice_follow_watcher()
 
     # Register graceful lifecycle shutdown
     import atexit

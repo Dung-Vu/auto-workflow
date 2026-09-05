@@ -136,7 +136,37 @@ class Config:
         if c.strip()
     ]
 
-    # Odoo — Test Server (testing0808.odoo.com)
+    # Odoo — Follow vendor invoice after a new purchase receipt is completed.
+    # Disabled by default: enable explicitly only after testing2608 acceptance.
+    VENDOR_INVOICE_FOLLOW_ENABLED = os.getenv(
+        "VENDOR_INVOICE_FOLLOW_ENABLED", "false"
+    ).lower() == "true"
+    VENDOR_INVOICE_FOLLOW_POLL_INTERVAL = int(
+        os.getenv("VENDOR_INVOICE_FOLLOW_POLL_INTERVAL", "30")
+    )
+    VENDOR_INVOICE_FOLLOW_ACTIVITY_TYPE_ID = int(
+        os.getenv("VENDOR_INVOICE_FOLLOW_ACTIVITY_TYPE_ID", "4")
+    )
+    VENDOR_INVOICE_FOLLOW_COMPANY_IDS = [
+        int(value.strip())
+        for value in os.getenv("VENDOR_INVOICE_FOLLOW_COMPANY_IDS", "1,11").split(",")
+        if value.strip().isdigit()
+    ]
+    VENDOR_INVOICE_FOLLOW_SUMMARY = os.getenv(
+        "VENDOR_INVOICE_FOLLOW_SUMMARY", "Follow NCC xuất hóa đơn"
+    )
+    VENDOR_INVOICE_FOLLOW_DEADLINE_DAYS = int(
+        os.getenv("VENDOR_INVOICE_FOLLOW_DEADLINE_DAYS", "0")
+    )
+    VENDOR_INVOICE_FOLLOW_STATE_PATH = os.getenv(
+        "VENDOR_INVOICE_FOLLOW_STATE_PATH",
+        os.path.join(
+            os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+            "vendor_invoice_follow_snapshot.json",
+        ),
+    )
+
+    # Odoo — Test Server (testing2608.odoo.com)
     # Used by Lot/Serial automation and any future test-only modules.
     ODOO_TEST_URL = os.getenv("ODOO_TEST_URL", "")
     ODOO_TEST_DB = os.getenv("ODOO_TEST_DB", "")

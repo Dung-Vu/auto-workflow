@@ -66,6 +66,13 @@ class Config:
     # Odoo — Section 5.2 SO-to-FSM violations (monthly 1st, 06:00 ICT / 23:00 UTC prev day)
     SECTION5_2_ENABLED = os.getenv("SECTION5_2_ENABLED", "true").lower() == "true"
 
+    # Odoo — Commission data export (last day of month 23:00 ICT, Helpdesk ticket 1547)
+    COMMISSION_EXPORT_ENABLED = os.getenv("COMMISSION_EXPORT_ENABLED", "false").lower() == "true"
+    COMMISSION_EXPORT_TASK_ID = int(os.getenv("COMMISSION_EXPORT_TASK_ID") or "0") or None
+    COMMISSION_EXPORT_NOTIFY_PARTNER_IDS = [
+        int(x) for x in os.getenv("COMMISSION_EXPORT_NOTIFY_PARTNER_IDS", "45376").split(",") if x.strip()
+    ]
+
     # Odoo — Commission Revenue (polling, replaces base.automation ID 64)
     COMMISSION_REVENUE_ENABLED = os.getenv("COMMISSION_REVENUE_ENABLED", "true").lower() == "true"
     COMMISSION_REVENUE_POLL_INTERVAL = int(os.getenv("COMMISSION_REVENUE_POLL_INTERVAL", "60"))  # seconds

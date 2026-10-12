@@ -2,8 +2,9 @@
 
 Scans ``stock.picking`` for CTL (kho mẫu) return transfers whose lending
 duration has crossed the D30 / D60 / D90 milestones and creates a
-``mail.activity`` for the responsible user (Ngô Trọng Cả) so the overdue
-loan is followed up. Only the highest applicable milestone is fired per
+``mail.activity`` for the configured responsible manager so the overdue
+loan is followed up. When the position is vacant, no activity is created.
+Only the highest applicable milestone is fired per
 picking; already-fired milestones are skipped via summary deduplication.
 
 Runs once per day at 11:00 ICT (04:00 UTC) in a daemon thread and exposes
@@ -43,7 +44,7 @@ MILESTONES = [30, 60, 90]
 
 PICKING_TYPE_ID = Config.CTL_PICKING_TYPE_ID
 LOCATION_CTL_ID = Config.CTL_LOCATION_ID
-USER_NGO_TRONG_CA = Config.CTL_USER_ID
+ACTIVITY_ASSIGNEE_USER_ID = Config.CTL_USER_ID
 ACTIVITY_TYPE_NAME = Config.CTL_ACTIVITY_TYPE_NAME
 LENDING_MIN_DATE = Config.CTL_LENDING_MIN_DATE
 
@@ -221,6 +222,14 @@ def create_activity(picking, milestone, dry_run=False):
         "</div>"
     )
 
+    if not ACTIVITY_ASSIGNEE_USER_ID:
+        logger.info(
+            "[CTL] Skipped activity for %s (%s): manager recipient is not configured",
+            picking.get("name"),
+            summary,
+        )
+        return None
+
     vals = {
         "res_model": "stock.picking",
         "res_model_id": _stock_picking_model_id,
@@ -229,7 +238,7 @@ def create_activity(picking, milestone, dry_run=False):
         "summary": summary,
         "note": note,
         "date_deadline": date.today().isoformat(),
-        "user_id": USER_NGO_TRONG_CA,
+        "user_id": ACTIVITY_ASSIGNEE_USER_ID,
     }
 
     if dry_run:
@@ -265,6 +274,7 @@ def run_ctl_overdue_check(dry_run=False):
         "created": 0,
         "skipped_existing": 0,
         "skipped_gap": 0,
+        "skipped_no_assignee": 0,
     }
 
     if not pickings:
@@ -311,6 +321,9 @@ def run_ctl_overdue_check(dry_run=False):
             continue
 
         new_id = create_activity(picking, highest_due, dry_run=dry_run)
+        if not new_id and not dry_run:
+            result["skipped_no_assignee"] += 1
+            continue
         if new_id or dry_run:
             # Record milestone in persistent state
             if pid_str not in state:

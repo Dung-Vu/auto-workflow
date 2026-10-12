@@ -48,7 +48,10 @@ class Config:
     CTL_ENABLED = os.getenv("CTL_ENABLED", "true").lower() == "true"
     CTL_PICKING_TYPE_ID = int(os.getenv("CTL_PICKING_TYPE_ID", "230"))
     CTL_LOCATION_ID = int(os.getenv("CTL_LOCATION_ID", "63"))
-    CTL_USER_ID = int(os.getenv("CTL_USER_ID", "218"))
+    # Intentionally optional while the CTL manager position is vacant.
+    # Leave CTL_USER_ID blank to suppress new CTL activities until an official assignee is announced.
+    _CTL_USER_ID_RAW = os.getenv("CTL_USER_ID", "").strip()
+    CTL_USER_ID = int(_CTL_USER_ID_RAW) if _CTL_USER_ID_RAW else None
     CTL_ACTIVITY_TYPE_NAME = os.getenv("CTL_ACTIVITY_TYPE_NAME", "CTL - Phiếu mượn quá hạn")
     CTL_LENDING_MIN_DATE = os.getenv("CTL_LENDING_MIN_DATE", "2026-01-01")
 
@@ -105,9 +108,16 @@ class Config:
     # Odoo — Follow Activity on Order State Change (polling, new automation)
     FOLLOW_ACTIVITY_ENABLED = os.getenv("FOLLOW_ACTIVITY_ENABLED", "true").lower() == "true"
     FOLLOW_ACTIVITY_POLL_INTERVAL = int(os.getenv("FOLLOW_ACTIVITY_POLL_INTERVAL", "30"))  # seconds
+    # Legacy policy: fixed users + company user + salesperson.
     FOLLOW_ACTIVITY_TRIGGER_VALUES = [
         v.strip() for v in os.getenv(
             "FOLLOW_ACTIVITY_TRIGGER_VALUES", "Hàng về/Chờ thi công"
+        ).split(",") if v.strip()
+    ]
+    # Sales-only policy. Values must be Odoo selection keys, not UI labels.
+    FOLLOW_ACTIVITY_SALES_ONLY_TRIGGER_VALUES = [
+        v.strip() for v in os.getenv(
+            "FOLLOW_ACTIVITY_SALES_ONLY_TRIGGER_VALUES", "ATTENTION!,NVL về/Chưa SX"
         ).split(",") if v.strip()
     ]
     FOLLOW_ACTIVITY_TYPE_ID = int(os.getenv("FOLLOW_ACTIVITY_TYPE_ID", "72"))
@@ -119,11 +129,19 @@ class Config:
     FOLLOW_ACTIVITY_COMPANY_USER_IDS = {
         int(company_id.strip()): int(user_id.strip())
         for entry in os.getenv(
-            "FOLLOW_ACTIVITY_COMPANY_USER_IDS", "1:218,11:9"
+            "FOLLOW_ACTIVITY_COMPANY_USER_IDS", "11:9"
         ).split(",") if entry.strip()
         for company_id, user_id in [entry.split(":", 1)]
     }
     FOLLOW_ACTIVITY_DEADLINE_DAYS = int(os.getenv("FOLLOW_ACTIVITY_DEADLINE_DAYS", "2"))
+    # Optional x_salesperson_2 record ID -> res.users ID overrides.
+    FOLLOW_ACTIVITY_SALESPERSON2_USER_OVERRIDES = {
+        int(salesperson2_id.strip()): int(user_id.strip())
+        for entry in os.getenv(
+            "FOLLOW_ACTIVITY_SALESPERSON2_USER_OVERRIDES", ""
+        ).split(",") if entry.strip()
+        for salesperson2_id, user_id in [entry.split(":", 1)]
+    }
 
     # Odoo — Return Activity (poll stock.picking returns → activity on return slip)
     RETURN_ACTIVITY_ENABLED = os.getenv("RETURN_ACTIVITY_ENABLED", "true").lower() == "true"
@@ -170,6 +188,40 @@ class Config:
         os.path.join(
             os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
             "vendor_invoice_follow_snapshot.json",
+        ),
+    )
+
+    # Odoo — Helpdesk Auto Progress (auto-move New tickets after 15m)
+    HELPDESK_AUTO_PROGRESS_ENABLED = os.getenv(
+        "HELPDESK_AUTO_PROGRESS_ENABLED", "true"
+    ).lower() == "true"
+    HELPDESK_AUTO_PROGRESS_POLL_INTERVAL = int(
+        os.getenv("HELPDESK_AUTO_PROGRESS_POLL_INTERVAL", "60")
+    )  # seconds
+    # Each ticket waits a random (but stable per ticket) number of minutes
+    # between MIN and MAX before it is moved to In Progress.
+    HELPDESK_AUTO_PROGRESS_MIN_WAIT_MINUTES = int(
+        os.getenv("HELPDESK_AUTO_PROGRESS_MIN_WAIT_MINUTES", "10")
+    )  # minutes
+    HELPDESK_AUTO_PROGRESS_MAX_WAIT_MINUTES = int(
+        os.getenv("HELPDESK_AUTO_PROGRESS_MAX_WAIT_MINUTES", "25")
+    )  # minutes
+    HELPDESK_AUTO_PROGRESS_NEW_STAGE_ID = int(
+        os.getenv("HELPDESK_AUTO_PROGRESS_NEW_STAGE_ID", "1")
+    )
+    HELPDESK_AUTO_PROGRESS_IN_PROGRESS_STAGE_ID = int(
+        os.getenv("HELPDESK_AUTO_PROGRESS_IN_PROGRESS_STAGE_ID", "2")
+    )
+    HELPDESK_AUTO_PROGRESS_TEAM_IDS = [
+        int(x.strip())
+        for x in os.getenv("HELPDESK_AUTO_PROGRESS_TEAM_IDS", "").split(",")
+        if x.strip().isdigit()
+    ]
+    HELPDESK_AUTO_PROGRESS_STATE_PATH = os.getenv(
+        "HELPDESK_AUTO_PROGRESS_STATE_PATH",
+        os.path.join(
+            os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+            "helpdesk_auto_progress_state.json",
         ),
     )
 

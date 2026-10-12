@@ -84,6 +84,10 @@ from services.vendor_invoice_follow import (
     start_vendor_invoice_follow_watcher,
     get_vendor_invoice_follow_status,
 )
+from services.helpdesk_auto_progress import (
+    start_helpdesk_auto_progress_watcher,
+    get_helpdesk_auto_progress_status,
+)
 from services.zns_odoo_poller import start_odoo_poller, stop_odoo_poller, get_odoo_poller_status
 
 
@@ -144,6 +148,7 @@ def health():
         "follow_activity": get_follow_activity_status(),
         "return_activity": get_return_activity_status(),
         "vendor_invoice_follow": get_vendor_invoice_follow_status(),
+        "helpdesk_auto_progress": get_helpdesk_auto_progress_status(),
         "lot_serial": lot_serial_status,
         "routes": [
             "/webhook/shopify/customer-create",
@@ -775,6 +780,9 @@ if __name__ == "__main__":
 
         # Start vendor invoice follow watcher (newly completed purchase receipts only)
         start_vendor_invoice_follow_watcher()
+
+        # Start Helpdesk auto progress watcher (auto-move New tickets after 15m)
+        start_helpdesk_auto_progress_watcher()
 
     # Register graceful lifecycle shutdown
     import atexit

@@ -6,11 +6,11 @@ receipts.  A receipt is eligible when it is an incoming purchase receipt, is
 not a return, and its ``date_done`` is later than that cutoff.
 
 Assignee policy:
-1. Resolve Sales Orders from direct/Studio fields, receipt move relations, then
-   exact Purchase Order Source references.
-2. Map ``OP in charge`` to exactly one active ``BON SC`` user; linked-user
-   metadata is accepted only after its active state and person name are checked.
-3. If no Sales Order can be resolved, use the Purchase Order Buyer.
+1. Use the Purchase Order Buyer (PIC of the purchase).
+2. If the PO has no Buyer, resolve Sales Orders from direct/Studio fields,
+   receipt move relations, then exact Purchase Order Source references, and map
+   ``OP in charge`` to exactly one active ``BON SC`` user; linked-user metadata
+   is accepted only after its active state and person name are checked.
 
 The activity is attached to the receipt itself and is idempotent by
 ``(stock.picking, summary)``.  The production watcher is disabled by default;
@@ -372,7 +372,7 @@ def _resolve_sales_op(sales: list[dict], client=odoo) -> tuple[int, str, str] | 
 
 
 def _resolve_assignee(picking: dict, client=odoo) -> dict | None:
-    """Resolve OP through strongest receipt→SO path, then PO Buyer fallback."""
+    """Resolve PO Buyer, then OP through strongest receipt→SO path as fallback."""
     purchase = None
     purchase_id = _many2one_id(picking.get("purchase_id"))
     if purchase_id:
@@ -402,10 +402,24 @@ def _resolve_assignee(picking: dict, client=odoo) -> dict | None:
             if sales:
                 resolution_path = "purchase_order.origin"
 
+    # Helpdesk #1600: the PO Buyer (PIC of the purchase) follows the vendor
+    # invoice; the SO OP is only a fallback when the PO has no Buyer.
+    buyer = purchase and purchase.get("user_id")
+    buyer_id = _many2one_id(buyer)
+    if buyer_id:
+        sale_names = ", ".join(sorted(str(sale.get("name") or "") for sale in sales))
+        return {
+            "user_id": buyer_id,
+            "user_name": buyer[1],
+            "source": "purchase_order_buyer",
+            "resolution_path": "purchase_order.user_id",
+            "sale_order": sale_names,
+            "purchase_order": purchase.get("name") or "",
+        }
+
     if sales:
         op_user = _resolve_sales_op(sales, client)
         if not op_user:
-            # Known SO provenance must never silently fall back to another buyer.
             return None
         return {
             "user_id": op_user[0],
@@ -414,18 +428,6 @@ def _resolve_assignee(picking: dict, client=odoo) -> dict | None:
             "resolution_path": resolution_path,
             "sale_order": op_user[2],
             "purchase_order": (purchase or {}).get("name") or "",
-        }
-
-    buyer = purchase and purchase.get("user_id")
-    buyer_id = _many2one_id(buyer)
-    if buyer_id:
-        return {
-            "user_id": buyer_id,
-            "user_name": buyer[1],
-            "source": "purchase_order_buyer",
-            "resolution_path": "purchase_order.user_id",
-            "sale_order": "",
-            "purchase_order": purchase.get("name") or "",
         }
     return None
 
@@ -567,7 +569,7 @@ def get_vendor_invoice_follow_status() -> dict:
     return {
         "active": _watcher_running,
         "enabled": Config.VENDOR_INVOICE_FOLLOW_ENABLED,
-        "policy": "new completed purchase receipts only; SO OP user, then PO Buyer fallback",
+        "policy": "new completed purchase receipts only; PO Buyer, then SO OP user fallback",
         "summary": _SUMMARY,
         "company_ids": _COMPANY_IDS,
         "poll_interval_seconds": _POLL_INTERVAL,

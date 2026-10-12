@@ -67,7 +67,7 @@ def configure_direct_sale(fake: FakeOdoo):
             "id": 8570,
             "name": "MH08545",
             "origin": "BG-202512-3272",
-            "user_id": [122, "BON SC, NGUYỄN THỊ TRANG"],
+            "user_id": False,
         }
     ]
     fake.search_read_results["res.users"] = [
@@ -125,13 +125,29 @@ def test_candidate_domain_is_strictly_post_cutoff_purchase_receipts():
     assert ["id", "not in", [10, 11]] in domain
 
 
-def test_resolves_direct_sales_order_op_before_po_buyer():
+def test_po_buyer_wins_over_sales_order_op():
     fake = FakeOdoo()
     configure_direct_sale(fake)
     fake.read_results[("purchase.order", (8570,))][0]["user_id"] = [
         220,
         "BON SC, BÙI THỊ NHÃ UYÊN",
     ]
+
+    result = service._resolve_assignee(picking(), fake)
+
+    assert result == {
+        "user_id": 220,
+        "user_name": "BON SC, BÙI THỊ NHÃ UYÊN",
+        "source": "purchase_order_buyer",
+        "resolution_path": "purchase_order.user_id",
+        "sale_order": "BG-202512-3272",
+        "purchase_order": "MH08545",
+    }
+
+
+def test_resolves_direct_sales_order_op_when_po_has_no_buyer():
+    fake = FakeOdoo()
+    configure_direct_sale(fake)
 
     result = service._resolve_assignee(picking(), fake)
 
@@ -152,7 +168,7 @@ def test_resolves_sales_order_from_purchase_origin_when_picking_has_no_sale():
             "id": 8570,
             "name": "MH08545",
             "origin": "BG-202512-3272",
-            "user_id": [220, "BON SC, BÙI THỊ NHÃ UYÊN"],
+            "user_id": False,
         }
     ]
     fake.search_read_results["sale.order"] = [
@@ -184,7 +200,7 @@ def test_computed_user_allows_op_label_that_only_omits_middle_name_thi():
         }
     ]
     fake.read_results[("purchase.order", (9534,))] = [
-        {"id": 9534, "name": "MH09341", "origin": "", "user_id": [220, "Buyer"]}
+        {"id": 9534, "name": "MH09341", "origin": "", "user_id": False}
     ]
     fake.search_read_results["res.users"] = [
         {"id": 298, "name": "BON SC, NGUYỄN THỊ MAI NGÂN", "active": True}
@@ -213,7 +229,7 @@ def test_inactive_computed_op_user_is_rejected():
         }
     ]
     fake.read_results[("purchase.order", (9534,))] = [
-        {"id": 9534, "name": "MH09341", "origin": "", "user_id": [220, "Buyer"]}
+        {"id": 9534, "name": "MH09341", "origin": "", "user_id": False}
     ]
     fake.search_read_results["res.users"] = [
         {"id": 298, "name": "BON SC, NGUYỄN THỊ MAI NGÂN", "active": False}
@@ -240,7 +256,7 @@ def test_stale_computed_op_user_is_rejected_and_exact_bon_sc_user_is_used():
             "id": 9534,
             "name": "MH09341",
             "origin": "BG-2606-0639",
-            "user_id": [220, "BON SC, BÙI THỊ NHÃ UYÊN"],
+            "user_id": False,
         }
     ]
     fake.search_read_results["res.users"] = [
@@ -260,7 +276,7 @@ def test_stale_computed_op_user_is_rejected_and_exact_bon_sc_user_is_used():
     assert result["source"] == "sale_order_op"
 
 
-def test_known_sale_with_unmappable_op_fails_closed_instead_of_using_buyer():
+def test_no_buyer_and_unmappable_op_fails_closed():
     fake = FakeOdoo()
     fake.read_results[("sale.order", (3474,))] = [
         {
@@ -275,7 +291,7 @@ def test_known_sale_with_unmappable_op_fails_closed_instead_of_using_buyer():
             "id": 8570,
             "name": "MH08545",
             "origin": "BG-202512-3272",
-            "user_id": [220, "BON SC, BÙI THỊ NHÃ UYÊN"],
+            "user_id": False,
         }
     ]
 
@@ -307,7 +323,7 @@ def test_multiple_origin_sales_with_different_ops_fails_closed():
             "id": 8570,
             "name": "MH08545",
             "origin": "BG-2605-0001, BG-2605-0002",
-            "user_id": [220, "BON SC, BÙI THỊ NHÃ UYÊN"],
+            "user_id": False,
         }
     ]
     fake.search_read_results["sale.order"] = [
@@ -336,7 +352,7 @@ def test_resolves_source_so_before_purchase_origin():
 def test_resolves_so_through_receipt_move_and_purchase_line():
     fake = FakeOdoo()
     fake.read_results[("purchase.order", (8570,))] = [
-        {"id": 8570, "name": "MH08545", "origin": "", "user_id": [220, "Buyer"]}
+        {"id": 8570, "name": "MH08545", "origin": "", "user_id": False}
     ]
     fake.read_results[("stock.move", (54351,))] = [
         {"id": 54351, "purchase_line_id": [17824, "Line"], "sale_line_id": False}

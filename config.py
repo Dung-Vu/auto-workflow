@@ -123,7 +123,7 @@ class Config:
     FOLLOW_ACTIVITY_TYPE_ID = int(os.getenv("FOLLOW_ACTIVITY_TYPE_ID", "72"))
     FOLLOW_ACTIVITY_FIXED_USER_IDS = [
         int(x) for x in os.getenv(
-            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "237,253"
+            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "247,345"
         ).split(",") if x.strip()
     ]
     FOLLOW_ACTIVITY_COMPANY_USER_IDS = {

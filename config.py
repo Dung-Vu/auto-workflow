@@ -96,6 +96,14 @@ class Config:
         ).split("|") if x.strip()
     ]
 
+    # sale.order IDs whose commission is set manually (business-approved
+    # exceptions) — the watcher never recalculates/overwrites them.
+    COMMISSION_REVENUE_SKIP_SO_IDS = [
+        int(x) for x in os.getenv(
+            "COMMISSION_REVENUE_SKIP_SO_IDS", ""
+        ).split(",") if x.strip()
+    ]
+
     # Odoo — OP Delivery Date Sync (polling, replaces base.automation ID 80)
     OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
     OP_DELIVERY_DATE_POLL_INTERVAL = int(os.getenv("OP_DELIVERY_DATE_POLL_INTERVAL", "60"))  # seconds

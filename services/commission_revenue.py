@@ -40,6 +40,7 @@ _ODOO_API_KEY = Config.ODOO_API_KEY
 _EXCLUDED_CATEGORIES = set(Config.COMMISSION_REVENUE_EXCLUDED_CATEGORIES)
 _EXCLUDED_NAME_PREFIXES = tuple(Config.COMMISSION_REVENUE_EXCLUDED_NAME_PREFIXES)
 _POLL_INTERVAL = Config.COMMISSION_REVENUE_POLL_INTERVAL
+_SKIP_SO_IDS = set(Config.COMMISSION_REVENUE_SKIP_SO_IDS)
 
 # ─── Runtime state ───
 _watcher_running = False
@@ -113,6 +114,9 @@ def _fetch_modified_so(last_poll_str: str) -> list:
             ("x_studio_ratio", "!=", False),
             ("x_studio_ratio", ">", 0),
         ]
+
+    if _SKIP_SO_IDS:
+        domain = domain + [("id", "not in", sorted(_SKIP_SO_IDS))]
 
     so_ids = odoo.search("sale.order", domain, limit=200)
     if not so_ids:
@@ -325,7 +329,8 @@ def _watcher_loop():
     interval = _POLL_INTERVAL
     logger.info(f"[COMMISSION] Watcher starting — interval: {interval}s, "
                 f"excluded categories: {sorted(_EXCLUDED_CATEGORIES)}, "
-                f"excluded name prefixes: {list(_EXCLUDED_NAME_PREFIXES)}")
+                f"excluded name prefixes: {list(_EXCLUDED_NAME_PREFIXES)}, "
+                f"skipped SO ids: {sorted(_SKIP_SO_IDS)}")
 
     time.sleep(10)  # Let server finish starting
 

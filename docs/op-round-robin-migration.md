@@ -44,6 +44,10 @@ existing lifecycle. `/health` adds `op_round_robin` with enabled/running/stoppin
 OP IDs, consecutive error count and last successful poll; no secrets or RPC
 fault text. Health remains the app's existing summary, not a readiness gate.
 
+Importing with OP disabled also works on platforms without `fcntl` (e.g. native
+Windows). Enabling the worker there fails closed before any file, thread or RPC
+is created; there is no unlocked fallback. Worker operation requires `fcntl`.
+
 A thread lock and nonblocking filesystem flock prevent repeated starts and
 multiple workers sharing `OP_ROUND_ROBIN_LOCK_PATH` (default
 `DATA_DIR/op_round_robin.lock`). Keep the same shared volume/path across replicas.

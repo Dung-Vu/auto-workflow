@@ -163,6 +163,40 @@ def test_daemon_guards(monkeypatch, tmp_path, setting, value):
     assert rr.RoundRobinWorker().start() is False
 
 
+def test_missing_fcntl_import_disabled_safe_enabled_fails_closed(monkeypatch, tmp_path):
+    import builtins
+
+    enable(monkeypatch, tmp_path)
+    original_import = builtins.__import__
+
+    def without_fcntl(name, *args, **kwargs):
+        if name == "fcntl":
+            raise ModuleNotFoundError("No module named 'fcntl'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_fcntl)
+    spec = importlib.util.spec_from_file_location("op_round_robin_without_fcntl", rr.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.fcntl is None
+    factory = MagicMock(side_effect=AssertionError("no network"))
+    thread = MagicMock(side_effect=AssertionError("no thread"))
+    monkeypatch.setattr(module, "get_models", factory)
+    monkeypatch.setattr(module.threading, "Thread", thread)
+    monkeypatch.setattr(module.Config, "OP_ROUND_ROBIN_ENABLED", False)
+    worker = module.RoundRobinWorker()
+    assert worker.start() is False
+    assert worker.status()["running"] is False
+    assert worker.stop() is True
+    monkeypatch.setattr(module.Config, "OP_ROUND_ROBIN_ENABLED", True)
+    with pytest.raises(RuntimeError, match="requires fcntl filesystem locking"):
+        worker.start()
+    assert worker._lease is None
+    assert not (tmp_path / "op.lock").exists()
+    factory.assert_not_called()
+    thread.assert_not_called()
+
+
 def test_lock_failure_closes_lease_and_never_starts(monkeypatch, tmp_path):
     enable(monkeypatch, tmp_path)
     lease = MagicMock()

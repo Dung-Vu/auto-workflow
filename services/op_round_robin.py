@@ -3,7 +3,11 @@
 IDs belong to x_studio_op_in_charge's relation, NOT res.users. Rotation is
 based on the highest sale.order ID with any OP globally, not write_date.
 """
-import fcntl
+try:
+    import fcntl
+except ImportError:  # e.g. native Windows; disabled imports must remain usable.
+    fcntl = None
+
 import http.client
 import logging
 import os
@@ -121,6 +125,8 @@ class RoundRobinWorker:
                 return False
             if self._thread and self._thread.is_alive():
                 return False
+            if fcntl is None:
+                raise RuntimeError("OP round robin requires fcntl filesystem locking")
             if not (Config.ODOO_URL and Config.ODOO_DB
                     and (Config.OP_ROUND_ROBIN_ODOO_UID or Config.ODOO_UID)
                     and (Config.OP_ROUND_ROBIN_ODOO_API_KEY or Config.ODOO_API_KEY)):

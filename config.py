@@ -96,6 +96,20 @@ class Config:
         ).split("|") if x.strip()
     ]
 
+    # External OP rotation — keep disabled until the legacy worker is stopped.
+    OP_ROUND_ROBIN_ENABLED = os.getenv("OP_ROUND_ROBIN_ENABLED", "false").lower() == "true"
+    OP_ROUND_ROBIN_POLL_INTERVAL = max(1, int(os.getenv("OP_ROUND_ROBIN_POLL_INTERVAL", "30")))
+    OP_ROUND_ROBIN_POLL_JITTER = max(0, int(os.getenv("OP_ROUND_ROBIN_POLL_JITTER", "15")))
+    OP_ROUND_ROBIN_RPC_TIMEOUT = max(1, int(os.getenv("OP_ROUND_ROBIN_RPC_TIMEOUT", "30")))
+    OP_ROUND_ROBIN_EXCLUDE_OP_ID = int(os.getenv("OP_ROUND_ROBIN_EXCLUDE_OP_ID", "25"))
+    OP_ROUND_ROBIN_ODOO_UID = int(os.getenv("OP_ROUND_ROBIN_ODOO_UID") or "0") or None
+    OP_ROUND_ROBIN_ODOO_API_KEY = os.getenv("OP_ROUND_ROBIN_ODOO_API_KEY", "")
+    OP_ROUND_ROBIN_LOCK_PATH = os.getenv(
+        "OP_ROUND_ROBIN_LOCK_PATH",
+        os.path.join(os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+                     "op_round_robin.lock"),
+    )
+
     # sale.order IDs whose commission is set manually (business-approved
     # exceptions) — the watcher never recalculates/overwrites them.
     COMMISSION_REVENUE_SKIP_SO_IDS = [
@@ -131,7 +145,7 @@ class Config:
     FOLLOW_ACTIVITY_TYPE_ID = int(os.getenv("FOLLOW_ACTIVITY_TYPE_ID", "72"))
     FOLLOW_ACTIVITY_FIXED_USER_IDS = [
         int(x) for x in os.getenv(
-            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "237,253"
+            "FOLLOW_ACTIVITY_FIXED_USER_IDS", "247,345"
         ).split(",") if x.strip()
     ]
     FOLLOW_ACTIVITY_COMPANY_USER_IDS = {

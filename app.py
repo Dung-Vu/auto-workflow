@@ -89,6 +89,9 @@ from services.helpdesk_auto_progress import (
     get_helpdesk_auto_progress_status,
 )
 from services.zns_odoo_poller import start_odoo_poller, stop_odoo_poller, get_odoo_poller_status
+from services.op_round_robin import (
+    start_op_round_robin, stop_op_round_robin, get_op_round_robin_status,
+)
 
 
 app = Flask(__name__)
@@ -144,6 +147,7 @@ def health():
         "commission_export": get_commission_export_status(),
         "commission_revenue": get_commission_revenue_status(),
         "op_delivery_date": get_op_delivery_date_status(),
+        "op_round_robin": get_op_round_robin_status(),
         "approval_doc_number": get_approval_doc_number_status(),
         "follow_activity": get_follow_activity_status(),
         "return_activity": get_return_activity_status(),
@@ -766,6 +770,9 @@ if __name__ == "__main__":
         # Start Commission Revenue watcher (polls sale.order every 60s)
         start_commission_revenue_watcher()
 
+        # External global OP rotation (opt-in only after legacy worker cutover).
+        start_op_round_robin()
+
         # Start OP Delivery Date watcher (syncs SO delivery date to picking scheduled_date)
         start_op_delivery_date_watcher()
 
@@ -791,6 +798,7 @@ if __name__ == "__main__":
 
     def _shutdown_daemons():
         logger.info("Shutting down background daemons...")
+        stop_op_round_robin()
         stop_odoo_poller()
         stop_reconciliation()
 

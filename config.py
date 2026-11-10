@@ -96,6 +96,20 @@ class Config:
         ).split("|") if x.strip()
     ]
 
+    # External OP rotation — keep disabled until the legacy worker is stopped.
+    OP_ROUND_ROBIN_ENABLED = os.getenv("OP_ROUND_ROBIN_ENABLED", "false").lower() == "true"
+    OP_ROUND_ROBIN_POLL_INTERVAL = max(1, int(os.getenv("OP_ROUND_ROBIN_POLL_INTERVAL", "30")))
+    OP_ROUND_ROBIN_POLL_JITTER = max(0, int(os.getenv("OP_ROUND_ROBIN_POLL_JITTER", "15")))
+    OP_ROUND_ROBIN_RPC_TIMEOUT = max(1, int(os.getenv("OP_ROUND_ROBIN_RPC_TIMEOUT", "30")))
+    OP_ROUND_ROBIN_EXCLUDE_OP_ID = int(os.getenv("OP_ROUND_ROBIN_EXCLUDE_OP_ID", "25"))
+    OP_ROUND_ROBIN_ODOO_UID = int(os.getenv("OP_ROUND_ROBIN_ODOO_UID") or "0") or None
+    OP_ROUND_ROBIN_ODOO_API_KEY = os.getenv("OP_ROUND_ROBIN_ODOO_API_KEY", "")
+    OP_ROUND_ROBIN_LOCK_PATH = os.getenv(
+        "OP_ROUND_ROBIN_LOCK_PATH",
+        os.path.join(os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+                     "op_round_robin.lock"),
+    )
+
     # Odoo — OP Delivery Date Sync (polling, replaces base.automation ID 80)
     OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
     OP_DELIVERY_DATE_POLL_INTERVAL = int(os.getenv("OP_DELIVERY_DATE_POLL_INTERVAL", "60"))  # seconds

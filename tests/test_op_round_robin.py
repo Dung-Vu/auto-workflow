@@ -163,6 +163,89 @@ def test_daemon_guards(monkeypatch, tmp_path, setting, value):
     assert rr.RoundRobinWorker().start() is False
 
 
+def test_lock_failure_closes_lease_and_never_starts(monkeypatch, tmp_path):
+    enable(monkeypatch, tmp_path)
+    lease = MagicMock()
+    monkeypatch.setattr("builtins.open", MagicMock(return_value=lease))
+    monkeypatch.setattr(rr.fcntl, "flock", MagicMock(side_effect=OSError("unsupported lock")))
+    factory = MagicMock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(rr, "get_models", factory)
+    worker = rr.RoundRobinWorker()
+    with pytest.raises(OSError, match="unsupported lock"):
+        worker.start()
+    lease.close.assert_called_once()
+    assert worker._lease is None
+    assert worker.status()["running"] is False
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["construct", "start"])
+def test_thread_startup_failure_releases_lease(monkeypatch, tmp_path, phase):
+    enable(monkeypatch, tmp_path)
+    factory = MagicMock()
+    if phase == "construct":
+        factory.side_effect = RuntimeError("thread unavailable")
+    else:
+        factory.return_value.start.side_effect = RuntimeError("thread unavailable")
+    monkeypatch.setattr(rr.threading, "Thread", factory)
+    worker = rr.RoundRobinWorker()
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        worker.start()
+    assert worker._lease is None
+    with open(rr.Config.OP_ROUND_ROBIN_LOCK_PATH, "a+") as lease:
+        rr.fcntl.flock(lease, rr.fcntl.LOCK_EX | rr.fcntl.LOCK_NB)
+
+
+def test_stop_timeout_keeps_lease_until_inflight_write_exits(monkeypatch, tmp_path):
+    enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(rr.random, "uniform", lambda *args: 0)
+    entered, release = rr.threading.Event(), rr.threading.Event()
+    models = MagicMock()
+    monkeypatch.setattr(rr, "get_models", lambda: models)
+    monkeypatch.setattr(rr, "get_unassigned_quotations", lambda _: [order(1), order(2)])
+
+    def blocked_write(*args):
+        entered.set()
+        assert release.wait(5)
+        return 23
+
+    process = MagicMock(side_effect=blocked_write)
+    monkeypatch.setattr(rr, "process_round_robin", process)
+    worker, contender = rr.RoundRobinWorker(), rr.RoundRobinWorker()
+    try:
+        assert worker.start()
+        assert entered.wait(2)
+        assert worker.stop(timeout=0) is False
+        assert worker.status()["stopping"] is True
+        assert worker._lease is not None
+        assert contender.start() is False
+        release.set()
+        assert worker.stop(timeout=2) is True
+        assert worker._lease is None
+        assert process.call_count == 1
+        # Check actual OS lease release without starting another RPC worker.
+        with open(rr.Config.OP_ROUND_ROBIN_LOCK_PATH, "a+") as lease:
+            rr.fcntl.flock(lease, rr.fcntl.LOCK_EX | rr.fcntl.LOCK_NB)
+    finally:
+        release.set()
+        worker.stop(timeout=2)
+        contender.stop(timeout=2)
+
+
+def test_failed_assignment_aborts_batch_without_success_poll(monkeypatch):
+    monkeypatch.setattr(rr.random, "uniform", lambda *args: 0)
+    monkeypatch.setattr(rr, "get_models", MagicMock())
+    monkeypatch.setattr(rr, "get_unassigned_quotations", lambda _: [order(1), order(2)])
+    process = MagicMock(side_effect=RuntimeError("write failed"))
+    monkeypatch.setattr(rr, "process_round_robin", process)
+    worker = rr.RoundRobinWorker()
+    worker._stop = Waits(2)
+    worker._run()
+    assert process.call_count == 1
+    assert worker.errors == 1
+    assert worker.last_poll is None
+
+
 def test_missing_credentials_fail_closed(monkeypatch, tmp_path):
     enable(monkeypatch, tmp_path)
     monkeypatch.setattr(rr.Config, "ODOO_API_KEY", "")

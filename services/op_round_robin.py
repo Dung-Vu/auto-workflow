@@ -136,11 +136,16 @@ class RoundRobinWorker:
                 lease.close()
                 log.warning("OP round robin already running (lock held)")
                 return False
+            except BaseException:
+                # Unsupported/broken locking must never fall back to unlocked
+                # operation, and must not leak the descriptor on failed startup.
+                lease.close()
+                raise
             self._lease = lease
             self._stop.clear()
             self.errors = 0
-            self._thread = threading.Thread(target=self._run, name="op-round-robin", daemon=True)
             try:
+                self._thread = threading.Thread(target=self._run, name="op-round-robin", daemon=True)
                 self._thread.start()
             except Exception:
                 self._lease.close()

@@ -65,7 +65,11 @@ independent hosts without a shared locking filesystem.
 6. Rollback: disable/restart auto-workflow and confirm worker termination BEFORE
    restarting legacy. Never overlap the two workers.
 
-No commit, push, merge, remote writes or deployment are part of this lane.
+This lane permits local task commits and merging fetched `origin/main` only.
+Preserve the original CS-handover baseline (`e650fa3`) in branch ancestry and
+retain upstream `COMMISSION_REVENUE_SKIP_SO_IDS`. No push, GitHub merge, Odoo
+writes or deployment is authorized here. Production inventory/drift reconciliation
+and independent review remain parent-controlled release gates.
 
 ## Hermetic checks
 

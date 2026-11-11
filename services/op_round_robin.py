@@ -74,10 +74,14 @@ def get_unassigned_quotations(models):
     ]], {"fields": ["id", "name", "company_id"], "order": "id asc"})
 
 
-def get_last_assigned_op(models, current_order_id):
-    rows = _call(models, "search_read", [[
-        ("id", "!=", current_order_id), (FIELD, "!=", False),
-    ]], {"fields": [FIELD], "order": "id desc", "limit": 1})
+def get_last_assigned_op(models, current_order_id, ops=None):
+    # Only OPs in the rotation define the turn: a manual assignment to an excluded OP
+    # (e.g. Mai Thu) must not reset the rotation back to the first OP.
+    domain = [("id", "!=", current_order_id), (FIELD, "!=", False)]
+    if ops:
+        domain.append((FIELD, "in", list(ops)))
+    rows = _call(models, "search_read", [domain],
+                 {"fields": [FIELD], "order": "id desc", "limit": 1})
     return rows[0][FIELD][0] if rows and rows[0].get(FIELD) else None
 
 
@@ -89,7 +93,7 @@ def process_round_robin(models, order):
     ops = get_op_list(company[0])
     if not ops:
         return None
-    last = get_last_assigned_op(models, order["id"])
+    last = get_last_assigned_op(models, order["id"], ops)
     chosen = ops[(ops.index(last) + 1) % len(ops)] if last in ops else ops[0]
     # Recheck eligibility to avoid overwriting changes since the initial poll.
     eligible = _call(models, "search_read", [[

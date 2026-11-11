@@ -26,6 +26,8 @@ class Models:
         for field, op, value in args[0]:
             if op == "=":
                 rows = [r for r in rows if r.get(field) == value]
+            elif op == "in":
+                rows = [r for r in rows if r.get(field) and r[field][0] in value]
             else:
                 rows = [r for r in rows if r.get(field) != value]
         rows = sorted(rows, key=lambda r: r["id"], reverse=kwargs.get("order") == "id desc")
@@ -55,9 +57,16 @@ def test_global_rotation(last, expected):
     fake = Models(rows)
     assert rr.process_round_robin(fake, rows[0]) == expected
     lookup = fake.calls[0]
-    assert lookup == ("search_read", [[("id", "!=", 3), (rr.FIELD, "!=", False)]],
+    assert lookup == ("search_read", [[("id", "!=", 3), (rr.FIELD, "!=", False), (rr.FIELD, "in", [23, 6, 27])]],
                       {"fields": [rr.FIELD], "order": "id desc", "limit": 1})
     assert fake.calls[-1] == ("write", [[3], {rr.FIELD: expected}], {})
+
+
+def test_manual_assignment_to_excluded_op_does_not_reset_rotation():
+    # Trang (6) by rotation, then sales manually assigns Mai Thu (25): next turn is Ngan (27), not Hong.
+    rows = [order(1, op=23, state="sale"), order(2, 11, 6), order(3, op=25), order(4)]
+    fake = Models(rows)
+    assert rr.process_round_robin(fake, fake.rows[3]) == 27
 
 
 def test_poll_draft_unset_only_sorted_and_current_order_excluded():

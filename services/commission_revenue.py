@@ -41,6 +41,7 @@ _EXCLUDED_CATEGORIES = set(Config.COMMISSION_REVENUE_EXCLUDED_CATEGORIES)
 _EXCLUDED_NAME_PREFIXES = tuple(Config.COMMISSION_REVENUE_EXCLUDED_NAME_PREFIXES)
 _POLL_INTERVAL = Config.COMMISSION_REVENUE_POLL_INTERVAL
 _SKIP_SO_IDS = set(Config.COMMISSION_REVENUE_SKIP_SO_IDS)
+_ZERO_PARTNER_IDS = set(Config.COMMISSION_REVENUE_ZERO_PARTNER_IDS)
 
 # ─── Runtime state ───
 _watcher_running = False
@@ -124,11 +125,36 @@ def _fetch_modified_so(last_poll_str: str) -> list:
 
     # Fetch SO data with current commission values
     sos = odoo.read("sale.order", so_ids, fields=[
-        "id", "name", "amount_untaxed", "x_studio_ratio",
+        "id", "name", "amount_untaxed", "x_studio_ratio", "partner_id",
         "x_studio_commission_revenue",
         "x_studio_commission_revenue_sp2",
     ])
     return sos
+
+
+def _mark_zero_commission(sos: list) -> None:
+    """Flag SOs whose customer (commercial partner) never earns commission.
+
+    Sets so["_zero_commission"] = True in place. Contacts of a listed
+    company are covered by resolving partner_id -> commercial_partner_id.
+    """
+    if not _ZERO_PARTNER_IDS or not sos:
+        return
+    partner_ids = sorted({
+        so["partner_id"][0] for so in sos if so.get("partner_id")
+    })
+    if not partner_ids:
+        return
+    commercial = {}
+    for p in odoo.read("res.partner", partner_ids,
+                       fields=["id", "commercial_partner_id"]):
+        cp = p.get("commercial_partner_id")
+        commercial[p["id"]] = cp[0] if cp else p["id"]
+    for so in sos:
+        pid = so["partner_id"][0] if so.get("partner_id") else None
+        if pid and (pid in _ZERO_PARTNER_IDS
+                    or commercial.get(pid) in _ZERO_PARTNER_IDS):
+            so["_zero_commission"] = True
 
 
 def _fetch_order_line_categories(so_ids: list) -> dict:
@@ -193,11 +219,16 @@ def _calculate_commission(so: dict, lines_data: list) -> tuple:
     """Calculate commission values for a single SO.
     Returns (commission_revenue, commission_revenue_sp2).
 
+    SOs flagged by _mark_zero_commission always get (0.0, 0.0).
+
     A line is excluded from the commission base (added to `dv`) if EITHER:
       - its product category is in _EXCLUDED_CATEGORIES, OR
       - its product display_name starts with any prefix in
         _EXCLUDED_NAME_PREFIXES.
     """
+    if so.get("_zero_commission"):
+        return 0.0, 0.0
+
     ratio = so.get("x_studio_ratio")
     if ratio is None or ratio is False:
         return None, None
@@ -245,6 +276,7 @@ def _poll_and_recalculate(snapshot: dict) -> dict:
 
     # 2. Fetch order line categories for all SOs
     so_ids = [s["id"] for s in sos]
+    _mark_zero_commission(sos)
     so_lines_map = _fetch_order_line_categories(so_ids)
 
     # 3. Recalculate and group writes by (new_sp1, new_sp2).
@@ -330,7 +362,8 @@ def _watcher_loop():
     logger.info(f"[COMMISSION] Watcher starting — interval: {interval}s, "
                 f"excluded categories: {sorted(_EXCLUDED_CATEGORIES)}, "
                 f"excluded name prefixes: {list(_EXCLUDED_NAME_PREFIXES)}, "
-                f"skipped SO ids: {sorted(_SKIP_SO_IDS)}")
+                f"skipped SO ids: {sorted(_SKIP_SO_IDS)}, "
+                f"zero-commission partners: {sorted(_ZERO_PARTNER_IDS)}")
 
     time.sleep(10)  # Let server finish starting
 
@@ -411,4 +444,5 @@ def get_commission_revenue_status() -> dict:
         "total_skipped_unchanged": _total_skipped,
         "excluded_categories": sorted(_EXCLUDED_CATEGORIES),
         "excluded_name_prefixes": list(_EXCLUDED_NAME_PREFIXES),
+        "zero_commission_partner_ids": sorted(_ZERO_PARTNER_IDS),
     }

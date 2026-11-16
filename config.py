@@ -118,6 +118,16 @@ class Config:
         ).split(",") if x.strip()
     ]
 
+    # Customer (commercial partner) IDs whose orders never earn commission:
+    # the watcher writes 0 to both commission fields for every SO of these
+    # customers or their contacts. 51426 = CÔNG TY TNHH DERUCCI VINABEDDING
+    # (orders only recorded for invoicing / receivables — ticket 1671).
+    COMMISSION_REVENUE_ZERO_PARTNER_IDS = [
+        int(x) for x in os.getenv(
+            "COMMISSION_REVENUE_ZERO_PARTNER_IDS", "51426"
+        ).split(",") if x.strip()
+    ]
+
     # Odoo — OP Delivery Date Sync (polling, replaces base.automation ID 80)
     OP_DELIVERY_DATE_ENABLED = os.getenv("OP_DELIVERY_DATE_ENABLED", "true").lower() == "true"
     OP_DELIVERY_DATE_POLL_INTERVAL = int(os.getenv("OP_DELIVERY_DATE_POLL_INTERVAL", "60"))  # seconds

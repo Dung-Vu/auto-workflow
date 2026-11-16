@@ -19,6 +19,7 @@ from services.odoo_client import odoo
 from services.commission_revenue import (
     _calculate_commission,
     _fetch_order_line_categories,
+    _mark_zero_commission,
 )
 
 logging.basicConfig(
@@ -57,10 +58,11 @@ def main():
     for i in range(0, len(so_ids), BATCH):
         chunk = so_ids[i:i + BATCH]
         sos = odoo.read("sale.order", chunk, fields=[
-            "id", "name", "amount_untaxed", "x_studio_ratio",
+            "id", "name", "amount_untaxed", "x_studio_ratio", "partner_id",
             "x_studio_commission_revenue",
             "x_studio_commission_revenue_sp2",
         ])
+        _mark_zero_commission(sos)
         so_lines_map = _fetch_order_line_categories(chunk)
 
         writes_by_value = {}
